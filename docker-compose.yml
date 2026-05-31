@@ -1,0 +1,70 @@
+version: '3.9'
+
+services:
+
+  # ── Digital Twin Backend ──────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dt-backend
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+      - PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}
+      - SCRAPE_INTERVAL_MS=15000
+      - DEMO_MODE=${DEMO_MODE:-true}
+    restart: unless-stopped
+    networks:
+      - dt-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Digital Twin Frontend ─────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: dt-frontend
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_API_URL=http://localhost:3001/api
+      - VITE_WS_URL=ws://localhost:3001/ws
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - dt-network
+
+  # ── Optional: Local Prometheus (for real metrics) ─────────
+  # Uncomment below if you want a local Prometheus scraping
+  # the Online Boutique (update scrape targets in prometheus.yml)
+  #
+  # prometheus:
+  #   image: prom/prometheus:v2.48.0
+  #   container_name: dt-prometheus
+  #   ports:
+  #     - "9090:9090"
+  #   volumes:
+  #     - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  #     - prometheus-data:/prometheus
+  #   command:
+  #     - '--config.file=/etc/prometheus/prometheus.yml'
+  #     - '--storage.tsdb.retention.time=24h'
+  #   restart: unless-stopped
+  #   networks:
+  #     - dt-network
+
+networks:
+  dt-network:
+    driver: bridge
+
+# volumes:
+#   prometheus-data:
