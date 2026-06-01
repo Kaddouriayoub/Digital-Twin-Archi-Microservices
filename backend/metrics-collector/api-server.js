@@ -12,10 +12,12 @@ const http       = require('http');
 const WebSocket  = require('ws');
 const NodeCache  = require('node-cache');
 
-const prometheus  = require('./prometheus-client');
-const transformer = require('./data-transformer');
-const simulator   = require('../simulator/scenario-engine');
-const loadInjector = require('../simulator/load-injector');
+const prometheus        = require('./prometheus-client');
+const transformer      = require('./data-transformer');
+const topologyDiscovery = require('./topology-discovery');
+const jaegerClient     = require('./jaeger-client');
+const simulator        = require('../simulator/scenario-engine');
+const loadInjector     = require('../simulator/load-injector');
 
 const DEMO_MODE = process.env.DEMO_MODE === 'true';
 
@@ -55,7 +57,7 @@ async function collectMetrics() {
       return;
     }
 
-    // ── Real Prometheus path ───────────────────────────────
+    // ── Real Prometheus + Jaeger path ─────────────────────
     const [
       services,
       latencyRaw,
@@ -63,7 +65,6 @@ async function collectMetrics() {
       errorsRaw,
       cpuRaw,
       memRaw,
-      topoRaw,
     ] = await Promise.all([
       prometheus.getServiceList(),
       prometheus.getLatencyP99(),
@@ -71,7 +72,6 @@ async function collectMetrics() {
       prometheus.getErrorRates(),
       prometheus.getCpuUsage(),
       prometheus.getMemoryUsage(),
-      prometheus.getTopologyEdges(),
     ]);
 
     const latency  = transformer.transformLatencyP99(latencyRaw);
@@ -79,7 +79,18 @@ async function collectMetrics() {
     const errors   = transformer.transformErrorRates(errorsRaw);
     const cpuPods  = transformer.transformCpuUsage(cpuRaw);
     const memPods  = transformer.transformMemoryUsage(memRaw);
-    const topology = transformer.transformTopology(topoRaw);
+
+    // Topology: prefer Jaeger auto-discovery, fallback to Prometheus
+    let topology;
+    const jaegerAvailable = await topologyDiscovery.isAvailable();
+    if (jaegerAvailable) {
+      topology = await topologyDiscovery.discoverTopology();
+      console.log('[Collector] Topology from Jaeger (auto-discovery)');
+    } else {
+      const topoRaw = await prometheus.getTopologyEdges();
+      topology = transformer.transformTopology(topoRaw);
+      console.log('[Collector] Topology from Prometheus (fallback)');
+    }
 
     const serviceSnapshots = transformer.buildServiceSnapshots(
       services, latency, rps, errors, cpuPods, memPods
@@ -251,13 +262,48 @@ app.get('/api/metrics/prometheus/status', async (_req, res) => {
   }
 });
 
+/**
+ * GET /api/metrics/jaeger/status
+ * Checks Jaeger connectivity and returns discovery info.
+ */
+app.get('/api/metrics/jaeger/status', async (_req, res) => {
+  const health = await jaegerClient.checkHealth();
+  const depMap = topologyDiscovery.getDependencyMap();
+  res.json({
+    ...health,
+    discoveredServices: Object.keys(depMap).length,
+    dependencyMap: depMap,
+  });
+});
+
+/**
+ * GET /api/topology/discover
+ * Force a fresh topology discovery from Jaeger.
+ */
+app.get('/api/topology/discover', async (_req, res) => {
+  const available = await topologyDiscovery.isAvailable();
+  if (!available) {
+    return res.status(503).json({ error: 'Jaeger not available', source: 'none' });
+  }
+  topologyDiscovery.resetCache();
+  const topology = await topologyDiscovery.discoverTopology();
+  res.json({ source: 'jaeger', topology, dependencyMap: topologyDiscovery.getDependencyMap() });
+});
+
 // ─────────────────────────────────────────────────────────────
 // Boot
 // ─────────────────────────────────────────────────────────────
 async function start() {
   console.log(`[Server] Starting Digital Twin Backend on :${PORT}`);
   console.log(`[Server] Prometheus: ${process.env.PROMETHEUS_URL || 'http://localhost:9090'}`);
+  console.log(`[Server] Jaeger:     ${process.env.JAEGER_URL || 'http://localhost:16686'}`);
   console.log(`[Server] Scrape interval: ${SCRAPE_INTERVAL}ms`);
+  console.log(`[Server] Demo mode: ${DEMO_MODE}`);
+
+  if (!DEMO_MODE) {
+    const jaegerHealth = await jaegerClient.checkHealth();
+    console.log(`[Server] Jaeger status: ${jaegerHealth.connected ? 'connected ✓' : 'unavailable (will use fallback topology)'}`);
+  }
 
   // Initial collection
   await collectMetrics();

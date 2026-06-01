@@ -14,6 +14,7 @@ services:
       - NODE_ENV=development
       - PORT=3001
       - PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}
+      - JAEGER_URL=${JAEGER_URL:-http://jaeger:16686}
       - SCRAPE_INTERVAL_MS=15000
       - DEMO_MODE=${DEMO_MODE:-true}
     restart: unless-stopped
@@ -39,6 +40,21 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - dt-network
+
+  # ── Jaeger (Distributed Tracing & Topology Discovery) ─────
+  jaeger:
+    image: jaegertracing/all-in-one:1.52
+    container_name: dt-jaeger
+    ports:
+      - "16686:16686"   # Jaeger UI + Query API
+      - "4317:4317"     # OpenTelemetry gRPC receiver
+      - "4318:4318"     # OpenTelemetry HTTP receiver
+      - "14250:14250"   # Jaeger gRPC receiver
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
     restart: unless-stopped
     networks:
       - dt-network

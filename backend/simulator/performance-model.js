@@ -9,6 +9,7 @@
 'use strict';
 
 const { safeFloat } = require('../metrics-collector/data-transformer');
+const topologyDiscovery = require('../metrics-collector/topology-discovery');
 
 // ─────────────────────────────────────────────────────────────
 // Service-specific calibration constants
@@ -29,14 +30,34 @@ const SERVICE_PROFILES = {
   default:                { baseCpuMc: 30,  baseMemMib: 50,  baseProcTimeMs: 15,  maxRps: 300 },
 };
 
-// Upstream dependency graph — which services a given service calls
-const DEPENDENCY_MAP = {
-  frontend:        ['cartservice', 'productcatalogservice', 'currencyservice', 'adservice', 'recommendationservice', 'shippingservice'],
+// Upstream dependency graph — fallback when Jaeger is unavailable
+const STATIC_DEPENDENCY_MAP = {
+  frontend:        ['checkoutservice', 'cartservice', 'productcatalogservice', 'currencyservice', 'adservice', 'recommendationservice'],
   checkoutservice: ['cartservice', 'productcatalogservice', 'currencyservice', 'shippingservice', 'emailservice', 'paymentservice'],
   recommendationservice: ['productcatalogservice'],
   cartservice:     ['redis-cart'],
-  frontend:        ['checkoutservice', 'cartservice', 'productcatalogservice', 'currencyservice', 'adservice', 'recommendationservice'],
 };
+
+/**
+ * Get the active dependency map.
+ * Prefers Jaeger-discovered topology, falls back to static map.
+ */
+function getActiveDependencyMap() {
+  const discovered = topologyDiscovery.getDependencyMap();
+  if (Object.keys(discovered).length > 0) return discovered;
+  return STATIC_DEPENDENCY_MAP;
+}
+
+// Exported as DEPENDENCY_MAP for backward compatibility
+const DEPENDENCY_MAP = new Proxy({}, {
+  get(_, prop) { return getActiveDependencyMap()[prop]; },
+  ownKeys()   { return Object.keys(getActiveDependencyMap()); },
+  has(_, prop) { return prop in getActiveDependencyMap(); },
+  getOwnPropertyDescriptor(_, prop) {
+    const map = getActiveDependencyMap();
+    if (prop in map) return { configurable: true, enumerable: true, value: map[prop] };
+  },
+});
 
 /**
  * Get or default the service profile.
@@ -122,8 +143,9 @@ function scoreHealth(latencyMs, errorPct) {
  */
 function propagateFailure(failedService, allServices, severity = 1.0) {
   const impact = {};
+  const depMap = getActiveDependencyMap();
 
-  Object.entries(DEPENDENCY_MAP).forEach(([consumer, deps]) => {
+  Object.entries(depMap).forEach(([consumer, deps]) => {
     if (deps.includes(failedService)) {
       const consumerBaseline = allServices.find(s => s.name === consumer);
       const addedLatency = 500 * severity + (consumerBaseline?.latencyP99Ms || 0) * severity * 0.5;
@@ -142,4 +164,5 @@ module.exports = {
   mmcQueueLatency,
   SERVICE_PROFILES,
   DEPENDENCY_MAP,
+  getActiveDependencyMap,
 };
