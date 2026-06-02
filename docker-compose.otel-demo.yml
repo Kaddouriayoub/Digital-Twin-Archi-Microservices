@@ -1,0 +1,56 @@
+version: '3.9'
+
+# ─────────────────────────────────────────────────────────────
+# Digital Twin — connects to OpenTelemetry Demo's infra
+# Run AFTER: docker compose -f compose.yaml -f compose.observability.yaml up -d
+# in the opentelemetry-demo directory
+# ─────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Digital Twin Backend ──────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dt-backend
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+      - PROMETHEUS_URL=http://prometheus:9090
+      - JAEGER_URL=http://jaeger:16686
+      - SCRAPE_INTERVAL_MS=15000
+      - DEMO_MODE=false
+    restart: unless-stopped
+    networks:
+      - otel-demo
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Digital Twin Frontend ─────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: dt-frontend
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_API_URL=http://localhost:3001/api
+      - VITE_WS_URL=ws://localhost:3001/ws
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - otel-demo
+
+networks:
+  otel-demo:
+    name: opentelemetry-demo_default
+    external: true

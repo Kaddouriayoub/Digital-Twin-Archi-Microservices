@@ -157,16 +157,16 @@ export default function App() {
                     onRunSimulation={runSimulation}
                     onClearSimulation={clearSimulation}
                   />
-                  {simulationResult && (
-                    <div className="sim-topology-preview">
-                      <div className="section-title">Impact Preview — Service Topology</div>
-                      <ServiceMap
-                        topology={topology}
-                        services={services}
-                        simulationResult={simulationResult}
-                      />
+                  <div className="sim-topology-preview">
+                    <div className="section-title">
+                      {simulationResult ? 'Impact Preview — Service Topology' : 'Live Topology'}
                     </div>
-                  )}
+                    <ServiceMap
+                      topology={topology}
+                      services={services}
+                      simulationResult={simulationResult}
+                    />
+                  </div>
                 </div>
               </div>
             )}

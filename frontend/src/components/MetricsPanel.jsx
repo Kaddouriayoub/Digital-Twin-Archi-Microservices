@@ -28,7 +28,7 @@ function tagColor(tag) {
 }
 
 // ── Service Card ─────────────────────────────────────────────
-function ServiceCard({ svc, simSvc, isSimMode }) {
+function ServiceCard({ svc, simSvc, isSimMode, onSelect }) {
   const [expanded, setExpanded] = useState(false);
   const health      = isSimMode ? simSvc?.health          : svc.health;
   const latency     = isSimMode ? simSvc?.predictedLatencyMs : svc.latencyP99Ms;
@@ -42,7 +42,7 @@ function ServiceCard({ svc, simSvc, isSimMode }) {
     <div
       className="service-card"
       style={{ '--accent': healthColor(health ?? 100) }}
-      onClick={() => setExpanded(e => !e)}
+      onClick={() => onSelect ? onSelect() : setExpanded(e => !e)}
     >
       {/* Header */}
       <div className="card-header">
@@ -101,7 +101,8 @@ function MetricBadge({ icon, label, value, warn, crit }) {
 // ── MetricsPanel ─────────────────────────────────────────────
 export default function MetricsPanel({ services, simulationResult }) {
   const [search, setSearch] = useState('');
-  const [sortBy, setSortBy] = useState('health'); // health | latency | rps | error
+  const [sortBy, setSortBy] = useState('health');
+  const [selectedDetail, setSelectedDetail] = useState(null);
 
   const simServices  = simulationResult?.result || [];
   const isSimMode    = simServices.length > 0;
@@ -156,8 +157,65 @@ export default function MetricsPanel({ services, simulationResult }) {
             svc={svc}
             simSvc={simServices.find(s => s.name === svc.name)}
             isSimMode={isSimMode}
+            onSelect={() => setSelectedDetail(svc)}
           />
         ))}
+      </div>
+
+      {/* Service Detail Modal */}
+      {selectedDetail && (
+        <ServiceDetailModal svc={selectedDetail} onClose={() => setSelectedDetail(null)} />
+      )}
+    </div>
+  );
+}
+
+function ServiceDetailModal({ svc, onClose }) {
+  return (
+    <div className="service-detail-overlay" onClick={onClose}>
+      <div className="service-detail-panel" onClick={e => e.stopPropagation()}>
+        <div className="detail-header">
+          <span className="detail-name" style={{ color: healthColor(svc.health ?? 100) }}>{svc.name}</span>
+          <button className="detail-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="detail-metrics">
+          <div className="detail-metric">
+            <span className="detail-metric-label">P99 Latency</span>
+            <span className="detail-metric-value" style={{ color: svc.latencyP99Ms > 500 ? 'var(--red)' : svc.latencyP99Ms > 200 ? 'var(--yellow)' : 'var(--green)' }}>
+              {Math.round(svc.latencyP99Ms ?? 0)}
+            </span>
+            <span className="detail-metric-unit">milliseconds</span>
+          </div>
+          <div className="detail-metric">
+            <span className="detail-metric-label">Throughput</span>
+            <span className="detail-metric-value">{(svc.throughputRps ?? 0).toFixed(1)}</span>
+            <span className="detail-metric-unit">req/sec</span>
+          </div>
+          <div className="detail-metric">
+            <span className="detail-metric-label">Error Rate</span>
+            <span className="detail-metric-value" style={{ color: svc.errorRatePct > 5 ? 'var(--red)' : svc.errorRatePct > 1 ? 'var(--yellow)' : 'var(--green)' }}>
+              {(svc.errorRatePct ?? 0).toFixed(2)}
+            </span>
+            <span className="detail-metric-unit">percent</span>
+          </div>
+          <div className="detail-metric">
+            <span className="detail-metric-label">Health Score</span>
+            <span className="detail-metric-value" style={{ color: healthColor(svc.health ?? 100) }}>
+              {Math.round(svc.health ?? 100)}
+            </span>
+            <span className="detail-metric-unit">/ 100</span>
+          </div>
+          <div className="detail-metric">
+            <span className="detail-metric-label">CPU</span>
+            <span className="detail-metric-value">{Math.round(svc.cpuMillicores ?? 0)}</span>
+            <span className="detail-metric-unit">millicores</span>
+          </div>
+          <div className="detail-metric">
+            <span className="detail-metric-label">Memory</span>
+            <span className="detail-metric-value">{Math.round(svc.memoryMib ?? 0)}</span>
+            <span className="detail-metric-unit">MiB</span>
+          </div>
+        </div>
       </div>
     </div>
   );

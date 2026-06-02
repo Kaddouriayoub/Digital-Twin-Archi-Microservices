@@ -21,7 +21,7 @@ const SCENARIOS = [
     description: 'Simulate a sudden surge in user traffic (e.g. flash sale, viral event).',
     params: [
       { key: 'intensity', label: 'Traffic Multiplier', type: 'range', min: 1, max: 10, default: 2 },
-      { key: 'service',   label: 'Entry-point Service', type: 'service', default: 'frontend' },
+      { key: 'service',   label: 'Entry-point Service', type: 'service', default: 'api-gateway' },
     ],
   },
   {
@@ -29,7 +29,7 @@ const SCENARIOS = [
     name:        'Service Failure',
     description: 'Simulate a complete or partial outage of a chosen service and see the cascading impact.',
     params: [
-      { key: 'service',   label: 'Failed Service',   type: 'service', default: 'paymentservice' },
+      { key: 'service',   label: 'Failed Service',   type: 'service', default: 'payment-service' },
       { key: 'intensity', label: 'Failure Severity',  type: 'range',   min: 0, max: 1, default: 1 },
     ],
   },
@@ -38,7 +38,7 @@ const SCENARIOS = [
     name:        'Scale Up Replicas',
     description: 'Add replicas to a bottleneck service and see predicted latency/CPU improvement.',
     params: [
-      { key: 'service',  label: 'Service to Scale', type: 'service', default: 'checkoutservice' },
+      { key: 'service',  label: 'Service to Scale', type: 'service', default: 'order-service' },
       { key: 'replicas', label: 'New Replica Count', type: 'number',  min: 1, max: 20, default: 3 },
     ],
   },
@@ -47,7 +47,7 @@ const SCENARIOS = [
     name:        'Network Partition',
     description: 'Simulate a network split causing packet loss between services.',
     params: [
-      { key: 'service',   label: 'Isolated Service', type: 'service', default: 'cartservice' },
+      { key: 'service',   label: 'Isolated Service', type: 'service', default: 'cart-service' },
       { key: 'intensity', label: 'Packet-Loss %',     type: 'range',   min: 0, max: 100, default: 50 },
     ],
   },
@@ -56,14 +56,14 @@ const SCENARIOS = [
     name:        'Memory Pressure',
     description: 'Simulate a memory leak causing GC pauses and OOM risk on a service.',
     params: [
-      { key: 'service',   label: 'Affected Service', type: 'service', default: 'recommendationservice' },
+      { key: 'service',   label: 'Affected Service', type: 'service', default: 'recommendation-service' },
       { key: 'intensity', label: 'Memory Pressure',  type: 'range',   min: 0, max: 1, default: 0.7 },
     ],
   },
   {
     id:          'cache_miss',
-    name:        'Cache Failure (Redis Down)',
-    description: 'Simulate Redis going down — cartservice must fall back to direct DB calls.',
+    name:        'Cache Failure (Store Down)',
+    description: 'Simulate the cache store going down — dependent services must fall back to direct DB calls.',
     params: [],
   },
 ];
@@ -200,10 +200,10 @@ function handleMemoryPressure({ service, intensity = 0.7, baseline }) {
 
 function handleCacheMiss({ baseline }) {
   return baseline.map(svc => {
-    if (svc.name === 'redis-cart') {
+    if (svc.name === 'cache-store') {
       return { ...svc, predictedLatencyMs: 9999, predictedErrorPct: 100, health: 0, scenarioTag: 'failed' };
     }
-    if (svc.name === 'cartservice') {
+    if (svc.name === 'cart-service') {
       return {
         ...svc,
         predictedLatencyMs: (svc.latencyP99Ms || 5) * 20,
@@ -212,7 +212,7 @@ function handleCacheMiss({ baseline }) {
         scenarioTag:        'cascading',
       };
     }
-    if (svc.name === 'checkoutservice' || svc.name === 'frontend') {
+    if (svc.name === 'order-service' || svc.name === 'api-gateway') {
       return {
         ...svc,
         predictedLatencyMs: (svc.latencyP99Ms || 80) * 5,

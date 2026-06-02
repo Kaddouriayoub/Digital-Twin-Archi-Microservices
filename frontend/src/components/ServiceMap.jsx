@@ -4,7 +4,7 @@
 // Nodes = microservices, edges = gRPC calls (width = RPS).
 // Node colour = health score. Supports drag, zoom, and pan.
 // ============================================================
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
 import * as d3 from 'd3';
 
 // ── Constants ────────────────────────────────────────────────
@@ -30,8 +30,9 @@ function healthToColor(score) {
 // ── ServiceMap ───────────────────────────────────────────────
 export default function ServiceMap({ topology, services, simulationResult }) {
   const svgRef       = useRef(null);
-  const simRef       = useRef(null);   // D3 simulation ref so we can stop it on remount
+  const simRef       = useRef(null);
   const containerRef = useRef(null);
+  const [selectedNode, setSelectedNode] = useState(null);
 
   const simServices = simulationResult?.result || [];
   const isSimMode   = simServices.length > 0;
@@ -180,7 +181,12 @@ export default function ServiceMap({ topology, services, simulationResult }) {
             ${d.tag ? `<div>Scenario: <b style="color:${SIM_TAG_COLORS[d.tag]}">${d.tag}</b></div>` : ''}
           `);
       })
-      .on('mouseleave', () => tooltip.style('display', 'none'));
+      .on('mouseleave', () => tooltip.style('display', 'none'))
+      .on('click', (event, d) => {
+        event.stopPropagation();
+        const svc = services.find(s => s.name === d.id);
+        if (svc) setSelectedNode(svc);
+      });
 
     // ── D3 Force simulation ────────────────────────────────
     simRef.current = d3.forceSimulation(nodes)
@@ -219,6 +225,49 @@ export default function ServiceMap({ topology, services, simulationResult }) {
         ))}
         {isSimMode && <div className="legend-item"><span className="legend-dot" style={{ background: 'var(--blue)', borderRadius: 0 }} />Simulation Active</div>}
       </div>
+      {/* Node detail panel */}
+      {selectedNode && (
+        <div className="service-detail-overlay" onClick={() => setSelectedNode(null)}>
+          <div className="service-detail-panel" onClick={e => e.stopPropagation()}>
+            <div className="detail-header">
+              <span className="detail-name">{selectedNode.name}</span>
+              <button className="detail-close" onClick={() => setSelectedNode(null)}>✕</button>
+            </div>
+            <div className="detail-metrics">
+              <div className="detail-metric">
+                <span className="detail-metric-label">P99 Latency</span>
+                <span className="detail-metric-value">{Math.round(selectedNode.latencyP99Ms ?? 0)}</span>
+                <span className="detail-metric-unit">ms</span>
+              </div>
+              <div className="detail-metric">
+                <span className="detail-metric-label">Throughput</span>
+                <span className="detail-metric-value">{(selectedNode.throughputRps ?? 0).toFixed(1)}</span>
+                <span className="detail-metric-unit">req/sec</span>
+              </div>
+              <div className="detail-metric">
+                <span className="detail-metric-label">Error Rate</span>
+                <span className="detail-metric-value">{(selectedNode.errorRatePct ?? 0).toFixed(2)}</span>
+                <span className="detail-metric-unit">%</span>
+              </div>
+              <div className="detail-metric">
+                <span className="detail-metric-label">Health</span>
+                <span className="detail-metric-value" style={{ color: healthToColor(selectedNode.health ?? 100) }}>{Math.round(selectedNode.health ?? 100)}</span>
+                <span className="detail-metric-unit">/ 100</span>
+              </div>
+              <div className="detail-metric">
+                <span className="detail-metric-label">CPU</span>
+                <span className="detail-metric-value">{Math.round(selectedNode.cpuMillicores ?? 0)}</span>
+                <span className="detail-metric-unit">millicores</span>
+              </div>
+              <div className="detail-metric">
+                <span className="detail-metric-label">Memory</span>
+                <span className="detail-metric-value">{Math.round(selectedNode.memoryMib ?? 0)}</span>
+                <span className="detail-metric-unit">MiB</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -16,26 +16,26 @@ const topologyDiscovery = require('../metrics-collector/topology-discovery');
 // Based on typical Online Boutique behaviour under nominal load.
 // ─────────────────────────────────────────────────────────────
 const SERVICE_PROFILES = {
-  frontend:               { baseCpuMc: 50,  baseMemMib: 80,  baseProcTimeMs: 15,  maxRps: 200 },
-  cartservice:            { baseCpuMc: 20,  baseMemMib: 40,  baseProcTimeMs: 5,   maxRps: 500 },
-  productcatalogservice:  { baseCpuMc: 30,  baseMemMib: 90,  baseProcTimeMs: 8,   maxRps: 400 },
-  currencyservice:        { baseCpuMc: 15,  baseMemMib: 30,  baseProcTimeMs: 3,   maxRps: 1000 },
-  paymentservice:         { baseCpuMc: 25,  baseMemMib: 50,  baseProcTimeMs: 20,  maxRps: 150 },
-  shippingservice:        { baseCpuMc: 20,  baseMemMib: 40,  baseProcTimeMs: 10,  maxRps: 300 },
-  emailservice:           { baseCpuMc: 10,  baseMemMib: 25,  baseProcTimeMs: 50,  maxRps: 100 },
-  checkoutservice:        { baseCpuMc: 40,  baseMemMib: 60,  baseProcTimeMs: 80,  maxRps: 100 },
-  recommendationservice:  { baseCpuMc: 35,  baseMemMib: 70,  baseProcTimeMs: 25,  maxRps: 200 },
-  adservice:              { baseCpuMc: 200, baseMemMib: 300, baseProcTimeMs: 10,  maxRps: 600 },
-  'redis-cart':           { baseCpuMc: 10,  baseMemMib: 50,  baseProcTimeMs: 1,   maxRps: 5000 },
-  default:                { baseCpuMc: 30,  baseMemMib: 50,  baseProcTimeMs: 15,  maxRps: 300 },
+  'api-gateway':            { baseCpuMc: 50,  baseMemMib: 80,  baseProcTimeMs: 15,  maxRps: 200 },
+  'cart-service':           { baseCpuMc: 20,  baseMemMib: 40,  baseProcTimeMs: 5,   maxRps: 500 },
+  'product-service':        { baseCpuMc: 30,  baseMemMib: 90,  baseProcTimeMs: 8,   maxRps: 400 },
+  'currency-service':       { baseCpuMc: 15,  baseMemMib: 30,  baseProcTimeMs: 3,   maxRps: 1000 },
+  'payment-service':        { baseCpuMc: 25,  baseMemMib: 50,  baseProcTimeMs: 20,  maxRps: 150 },
+  'shipping-service':       { baseCpuMc: 20,  baseMemMib: 40,  baseProcTimeMs: 10,  maxRps: 300 },
+  'notification-service':   { baseCpuMc: 10,  baseMemMib: 25,  baseProcTimeMs: 50,  maxRps: 100 },
+  'order-service':          { baseCpuMc: 40,  baseMemMib: 60,  baseProcTimeMs: 80,  maxRps: 100 },
+  'recommendation-service': { baseCpuMc: 35,  baseMemMib: 70,  baseProcTimeMs: 25,  maxRps: 200 },
+  'ad-service':             { baseCpuMc: 200, baseMemMib: 300, baseProcTimeMs: 10,  maxRps: 600 },
+  'cache-store':            { baseCpuMc: 10,  baseMemMib: 50,  baseProcTimeMs: 1,   maxRps: 5000 },
+  default:                  { baseCpuMc: 30,  baseMemMib: 50,  baseProcTimeMs: 15,  maxRps: 300 },
 };
 
 // Upstream dependency graph — fallback when Jaeger is unavailable
 const STATIC_DEPENDENCY_MAP = {
-  frontend:        ['checkoutservice', 'cartservice', 'productcatalogservice', 'currencyservice', 'adservice', 'recommendationservice'],
-  checkoutservice: ['cartservice', 'productcatalogservice', 'currencyservice', 'shippingservice', 'emailservice', 'paymentservice'],
-  recommendationservice: ['productcatalogservice'],
-  cartservice:     ['redis-cart'],
+  'api-gateway':            ['order-service', 'cart-service', 'product-service', 'currency-service', 'ad-service', 'recommendation-service'],
+  'order-service':          ['cart-service', 'product-service', 'currency-service', 'shipping-service', 'notification-service', 'payment-service'],
+  'recommendation-service': ['product-service'],
+  'cart-service':           ['cache-store'],
 };
 
 /**

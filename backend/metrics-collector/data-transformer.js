@@ -13,6 +13,7 @@
 function extractServiceName(metricLabels) {
   return (
     metricLabels.destination_service_name ||
+    metricLabels.exported_job             ||
     metricLabels.job                      ||
     metricLabels.app                      ||
     metricLabels.service                  ||
@@ -47,8 +48,8 @@ function transformLatencyP99(results) {
   results.forEach(item => {
     const svc = extractServiceName(item.metric);
     let val = safeFloat(item.value[1]);
-    // If value looks like seconds (< 100), convert to ms
-    if (val < 100 && val > 0) val = val * 1000;
+    // Only convert if value looks like seconds (< 1), otherwise assume ms
+    if (val > 0 && val < 1) val = val * 1000;
     out[svc] = safeFloat(val, 2);
   });
   return out;

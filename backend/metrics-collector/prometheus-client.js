@@ -61,10 +61,16 @@ async function queryRange(query, startSec, endSec, step = '15s') {
 // ──────────────────────────────────────────────
 
 /**
- * Returns all service names discovered from Prometheus targets.
+ * Returns all service names discovered from Prometheus targets or metrics.
  */
 async function getServiceList() {
   try {
+    // Try to get services from metric labels (works with OTel Collector)
+    const jobResults = await queryInstant('count by (exported_job) (otel_http_server_duration_milliseconds_count)');
+    if (jobResults.length > 0) {
+      return jobResults.map(r => r.metric.exported_job).filter(Boolean);
+    }
+
     const resp = await axios.get(`${PROMETHEUS_URL}/api/v1/targets`, { timeout: 8000 });
     const activeTargets = resp.data.data.activeTargets || [];
     const services = new Set();
@@ -75,24 +81,25 @@ async function getServiceList() {
     return Array.from(services);
   } catch (err) {
     console.error('[PrometheusClient] getServiceList failed:', err.message);
-    // Fallback: return the known Online Boutique service list
-    return [
-      'frontend', 'cartservice', 'productcatalogservice', 'currencyservice',
-      'paymentservice', 'shippingservice', 'emailservice', 'checkoutservice',
-      'recommendationservice', 'adservice', 'redis-cart',
-    ];
+    return [];
   }
 }
 
 /**
- * P99 request latency for all services (seconds).
- * Expects Istio or OpenTelemetry metrics.
+ * P99 request latency for all services (milliseconds).
+ * Supports Istio, standard OTel, and OTel Collector exported metrics.
  */
 async function getLatencyP99() {
-  // Istio sidecar metric
-  const query = `histogram_quantile(0.99, sum(rate(istio_request_duration_milliseconds_bucket[5m])) by (destination_service_name, le))`;
+  // OTel Collector format (otel_ prefix, exported_job label)
+  const query = `histogram_quantile(0.99, sum(rate(otel_http_server_duration_milliseconds_bucket[5m])) by (exported_job, le))`;
   const results = await queryInstant(query);
   if (results.length > 0) return results;
+
+  // Istio sidecar metric
+  const istio = await queryInstant(
+    `histogram_quantile(0.99, sum(rate(istio_request_duration_milliseconds_bucket[5m])) by (destination_service_name, le))`
+  );
+  if (istio.length > 0) return istio;
 
   // Fallback: generic OTEL http server histogram
   return queryInstant(
@@ -104,9 +111,14 @@ async function getLatencyP99() {
  * Request rate (RPS) per service.
  */
 async function getThroughput() {
-  const query = `sum(rate(istio_requests_total[1m])) by (destination_service_name)`;
+  // OTel Collector format
+  const query = `sum(rate(otel_http_server_duration_milliseconds_count[1m])) by (exported_job)`;
   const results = await queryInstant(query);
   if (results.length > 0) return results;
+
+  // Istio
+  const istio = await queryInstant(`sum(rate(istio_requests_total[1m])) by (destination_service_name)`);
+  if (istio.length > 0) return istio;
 
   return queryInstant(`sum(rate(http_server_requests_total[1m])) by (job)`);
 }
@@ -115,13 +127,21 @@ async function getThroughput() {
  * Error rate (4xx + 5xx) per service.
  */
 async function getErrorRates() {
-  const query = `
+  // OTel Collector format
+  const otel = await queryInstant(`
+    sum(rate(otel_http_server_duration_milliseconds_count{http_status_code=~"[45].."}[5m])) by (exported_job)
+    /
+    sum(rate(otel_http_server_duration_milliseconds_count[5m])) by (exported_job)
+  `);
+  if (otel.length > 0) return otel;
+
+  // Istio
+  const istio = await queryInstant(`
     sum(rate(istio_requests_total{response_code=~"[45][0-9][0-9]"}[5m])) by (destination_service_name)
     /
     sum(rate(istio_requests_total[5m])) by (destination_service_name)
-  `;
-  const results = await queryInstant(query);
-  if (results.length > 0) return results;
+  `);
+  if (istio.length > 0) return istio;
 
   return queryInstant(
     `sum(rate(http_server_requests_total{status=~"[45][0-9][0-9]"}[5m])) by (job)
