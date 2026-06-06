@@ -9,9 +9,10 @@
 // Helpers
 // ─────────────────────────────────────────────────────────────
 
-/** Pull a label value from an Istio or OTel metric result item. */
+/** Pull a label value from an OTel, Istio, or generic metric result item. */
 function extractServiceName(metricLabels) {
   return (
+    metricLabels.service_name             ||
     metricLabels.destination_service_name ||
     metricLabels.exported_job             ||
     metricLabels.job                      ||
@@ -22,7 +23,7 @@ function extractServiceName(metricLabels) {
 }
 
 function extractPodName(metricLabels) {
-  return metricLabels.pod || metricLabels.container || 'unknown';
+  return metricLabels.service_name || metricLabels.pod || metricLabels.container || 'unknown';
 }
 
 /** Safe float parse — returns 0 when the value is NaN / null / undefined. */
@@ -48,8 +49,8 @@ function transformLatencyP99(results) {
   results.forEach(item => {
     const svc = extractServiceName(item.metric);
     let val = safeFloat(item.value[1]);
-    // Only convert if value looks like seconds (< 1), otherwise assume ms
-    if (val > 0 && val < 1) val = val * 1000;
+    // Filter out NaN and Inf values
+    if (!isFinite(val)) val = 0;
     out[svc] = safeFloat(val, 2);
   });
   return out;
@@ -167,12 +168,12 @@ function transformTimeSeries(results, unit = 'ms') {
  */
 function buildServiceSnapshots(services, latency, rps, errors, cpuPods, memPods) {
   return services.map(name => {
-    // Match pod metrics by service name prefix
-    const podCpuTotal = Object.entries(cpuPods)
+    // Match metrics by service name (direct match or prefix)
+    const podCpuTotal = cpuPods[name] || Object.entries(cpuPods)
       .filter(([pod]) => pod.startsWith(name))
       .reduce((acc, [, v]) => acc + v, 0);
 
-    const podMemTotal = Object.entries(memPods)
+    const podMemTotal = memPods[name] || Object.entries(memPods)
       .filter(([pod]) => pod.startsWith(name))
       .reduce((acc, [, v]) => acc + v, 0);
 
