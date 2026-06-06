@@ -16,6 +16,8 @@ const SEVERITY_CONFIG = {
 export default function OptimizePanel() {
   const [recommendations, setRecommendations] = useState([]);
   const [scalingPlan, setScalingPlan] = useState(null);
+  const [anomalies, setAnomalies] = useState([]);
+  const [serviceStatus, setServiceStatus] = useState([]);
   const [sla, setSla] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeView, setActiveView] = useState('recommendations');
@@ -23,13 +25,16 @@ export default function OptimizePanel() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [recResp, scaleResp] = await Promise.all([
+      const [recResp, scaleResp, anomResp] = await Promise.all([
         fetch(`${API_URL}/optimize/recommendations`).then(r => r.json()),
         fetch(`${API_URL}/optimize/scaling`).then(r => r.json()),
+        fetch(`${API_URL}/optimize/anomalies`).then(r => r.json()),
       ]);
       setRecommendations(recResp.recommendations || []);
       setSla(recResp.sla);
       setScalingPlan(scaleResp);
+      setAnomalies(anomResp.anomalies || []);
+      setServiceStatus(anomResp.serviceStatus || []);
     } catch (err) {
       console.error('Optimization fetch failed:', err);
     } finally {
@@ -37,7 +42,7 @@ export default function OptimizePanel() {
     }
   };
 
-  useEffect(() => { fetchData(); }, []);
+  useEffect(() => { fetchData(); const iv = setInterval(fetchData, 15000); return () => clearInterval(iv); }, []);
 
   if (loading) {
     return <div className="loading-screen"><div className="loading-spinner" /><p>Analyzing metrics...</p></div>;
@@ -49,6 +54,9 @@ export default function OptimizePanel() {
         <div className="optimize-tabs">
           <button className={`opt-tab ${activeView === 'recommendations' ? 'active' : ''}`} onClick={() => setActiveView('recommendations')}>
             <Zap size={14} /> Recommandations ({recommendations.length})
+          </button>
+          <button className={`opt-tab ${activeView === 'anomalies' ? 'active' : ''}`} onClick={() => setActiveView('anomalies')}>
+            <AlertTriangle size={14} /> Anomalies ({anomalies.length})
           </button>
           <button className={`opt-tab ${activeView === 'scaling' ? 'active' : ''}`} onClick={() => setActiveView('scaling')}>
             <TrendingUp size={14} /> Plan de Scaling
@@ -123,6 +131,48 @@ export default function OptimizePanel() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {activeView === 'anomalies' && (
+        <div className="anomalies-view">
+          <div className="status-grid">
+            {serviceStatus.map(s => (
+              <div key={s.name} className={`status-chip ${s.status}`}>
+                <span className="status-dot" />
+                <span className="status-name">{s.name}</span>
+                <span className="status-label">{s.status === 'stable' ? '✓' : s.status === 'anomaly' ? '⚠' : s.status === 'degrading' ? '↗' : '…'}</span>
+              </div>
+            ))}
+          </div>
+          {anomalies.length === 0 ? (
+            <div className="no-recommendations">
+              <Info size={24} color="#10b981" />
+              <p>Aucune anomalie détectée — tous les services sont stables.</p>
+              <p style={{fontSize: '0.75rem', color: 'var(--text-muted)'}}>L'historique se remplit au fil du temps (besoin de ~5 min de données).</p>
+            </div>
+          ) : (
+            <div className="recommendations-list">
+              {anomalies.map((a, i) => (
+                <div key={i} className="rec-card" style={{ borderLeftColor: SEVERITY_CONFIG[a.severity]?.color || '#3b82f6' }}>
+                  <div className="rec-header">
+                    {a.type === 'trend' ? <TrendingUp size={16} color="#f59e0b" /> : <AlertCircle size={16} color={SEVERITY_CONFIG[a.severity]?.color} />}
+                    <span className="rec-service">{a.service}</span>
+                    <span className="rec-type-badge">{a.type === 'anomaly' ? 'Z-score' : a.type === 'trend' ? 'Tendance' : 'EWMA'}</span>
+                    <span className="rec-severity" style={{ color: SEVERITY_CONFIG[a.severity]?.color }}>{SEVERITY_CONFIG[a.severity]?.label}</span>
+                  </div>
+                  <p className="rec-message">{a.message}</p>
+                  {a.details && (
+                    <div className="rec-details">
+                      {a.details.zScore != null && <span>z={a.details.zScore}</span>}
+                      {a.details.timeToSLABreachMin != null && <span>SLA breach: ~{a.details.timeToSLABreachMin}min</span>}
+                      {a.details.deviationPct != null && <span>+{a.details.deviationPct}% vs EWMA</span>}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

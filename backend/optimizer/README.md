@@ -167,7 +167,65 @@ SI ρ < 30% ET latence < SLA/2:
 
 ---
 
-## 5. Références
+## 5. Niveau 3 — Détection d'Anomalies
+
+### 5.1 Z-score (détection instantanée)
+
+Mesure combien d'écarts-types la valeur actuelle dévie de la moyenne historique :
+
+```
+z = (x - μ) / σ
+
+Si |z| > 2 → anomalie (probabilité < 5% sous distribution normale)
+Si |z| > 3 → anomalie sévère (probabilité < 0.3%)
+```
+
+**Implémentation :** On garde les 30 dernières valeurs par service. La valeur actuelle est comparée à la distribution de cet historique.
+
+### 5.2 EWMA — Exponentially Weighted Moving Average
+
+Moyenne mobile qui pondère plus fortement les valeurs récentes (Roberts, 1959) :
+
+```
+S_t = α × x_t + (1 - α) × S_{t-1}
+
+α = 0.3 (facteur de lissage, plus élevé = plus réactif)
+```
+
+**Détection :** Si la valeur actuelle dépasse l'EWMA de plus de 50%, c'est une déviation significative.
+
+**Propriété :** La demi-vie d'un point passé est `ln(2) / ln(1/(1-α))` ≈ 2 points. Donc les valeurs vieilles de ~7 points ne comptent presque plus.
+
+### 5.3 Régression linéaire — Prédiction de tendance
+
+Méthode des moindres carrés sur les N derniers points :
+
+```
+ŷ = a × t + b
+
+a = (n×Σ(t×y) - Σt×Σy) / (n×Σ(t²) - (Σt)²)    (pente)
+b = (Σy - a×Σt) / n                               (ordonnée à l'origine)
+```
+
+**Prédiction :** On extrapole pour estimer quand la métrique dépassera le SLA :
+
+```
+temps_avant_SLA = (SLA_max - valeur_actuelle) / pente_par_minute
+```
+
+Si ce temps est < 30 minutes → alerte préventive.
+
+### 5.4 Combinaison des 3 méthodes
+
+| Méthode | Détecte quoi | Temps de réaction |
+|---------|-------------|-------------------|
+| Z-score | Saut brutal (spike) | Immédiat |
+| EWMA | Déviation progressive | ~2-3 points |
+| Régression | Tendance à la hausse | ~5 points minimum |
+
+---
+
+## 6. Références
 
 1. Kleinrock, L. (1975). *Queueing Systems, Volume 1: Theory*. Wiley-Interscience.
    - Résumé du modèle M/M/c : https://en.wikipedia.org/wiki/M/M/c_queue
@@ -187,3 +245,11 @@ SI ρ < 30% ET latence < SLA/2:
    - https://en.wikipedia.org/wiki/Little%27s_law
 9. Erlang C Formula (modèle M/M/c généralisé pour centres d'appels et serveurs) :
    - https://en.wikipedia.org/wiki/Erlang_(unit)#Erlang_C_formula
+10. Roberts, S.W. (1959). *Control Chart Tests Based on Geometric Moving Averages*. Technometrics.
+    - EWMA expliqué : https://en.wikipedia.org/wiki/EWMA_chart
+11. Netflix Technology Blog. *RAD — Outlier Detection on Big Data* (2015).
+    - https://netflixtechblog.com/rad-outlier-detection-on-big-data-d6b0ff32fb44
+12. Twitter Engineering. *Anomaly Detection for Time Series* (2015).
+    - https://blog.twitter.com/engineering/en_us/a/2015/introducing-practical-and-robust-anomaly-detection-in-a-time-series
+13. Google SRE Book. *Practical Alerting from Time-Series Data*.
+    - https://sre.google/sre-book/practical-alerting/
