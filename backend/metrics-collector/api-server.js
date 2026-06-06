@@ -18,6 +18,7 @@ const topologyDiscovery = require('./topology-discovery');
 const jaegerClient     = require('./jaeger-client');
 const simulator        = require('../simulator/scenario-engine');
 const loadInjector     = require('../simulator/load-injector');
+const optimizer        = require('../optimizer/optimization-engine');
 
 const DEMO_MODE = process.env.DEMO_MODE === 'true';
 
@@ -288,6 +289,36 @@ app.get('/api/topology/discover', async (_req, res) => {
   topologyDiscovery.resetCache();
   const topology = await topologyDiscovery.discoverTopology();
   res.json({ source: 'jaeger', topology, dependencyMap: topologyDiscovery.getDependencyMap() });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Optimization Routes
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/optimize/recommendations
+ * Returns optimization recommendations based on current metrics.
+ */
+app.get('/api/optimize/recommendations', (_req, res) => {
+  const snapshot = cache.get('snapshot');
+  if (!snapshot) {
+    return res.status(503).json({ error: 'No metrics available for optimization.' });
+  }
+  const recommendations = optimizer.generateRecommendations(snapshot.services, snapshot.topology);
+  res.json({ recommendations, sla: optimizer.SLA, analyzedAt: Date.now() });
+});
+
+/**
+ * GET /api/optimize/scaling
+ * Returns optimal scaling plan for all services.
+ */
+app.get('/api/optimize/scaling', (_req, res) => {
+  const snapshot = cache.get('snapshot');
+  if (!snapshot) {
+    return res.status(503).json({ error: 'No metrics available for optimization.' });
+  }
+  const plan = optimizer.computeOptimalScaling(snapshot.services);
+  res.json({ ...plan, computedAt: Date.now() });
 });
 
 // ─────────────────────────────────────────────────────────────
