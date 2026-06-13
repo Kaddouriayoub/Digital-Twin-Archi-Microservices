@@ -20,7 +20,7 @@ services:
       - NODE_ENV=development
       - PORT=3001
       - PROMETHEUS_URL=http://prometheus:9090
-      - JAEGER_URL=http://jaeger:16686
+      - JAEGER_URL=http://jaeger:16686/jaeger/ui
       - SCRAPE_INTERVAL_MS=15000
       - DEMO_MODE=false
     restart: unless-stopped
@@ -52,5 +52,5 @@ services:
 
 networks:
   otel-demo:
-    name: opentelemetry-demo_default
+    name: opentelemetry-demo
     external: true

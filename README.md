@@ -1,6 +1,16 @@
 # Digital Twin for Microservices
 
-A real-time digital twin platform that visualizes, monitors, and simulates microservices performance metrics. Designed to work with any microservices architecture. Built as a PFA (Projet de Fin d'Année) project at ENSIAS.
+A real-time digital twin platform that visualizes, monitors, and simulates microservices performance metrics. Designed to work with any OpenTelemetry-instrumented microservices architecture.
+
+Built as a PFA (Projet de Fin d'Année) project at ENSIAS.
+
+## Features
+
+- **Real-time monitoring** — Golden signals (latency, throughput, errors) via Prometheus
+- **Topology auto-discovery** — Service dependency graph from Jaeger traces
+- **What-if simulation** — 6 scenarios (load spike, service failure, scale up, network partition, memory pressure, cache miss) using M/M/c queueing theory
+- **Live dashboard** — WebSocket push updates with REST polling fallback
+- **Demo mode** — Synthetic data for development without a live cluster
 
 ## Architecture
 
@@ -21,36 +31,74 @@ A real-time digital twin platform that visualizes, monitors, and simulates micro
 │       ├── components/       # UI components (topology graph, charts, simulator)
 │       ├── hooks/            # State management (WebSocket + REST)
 │       └── api/              # API client
-├── k8s-manifests/            # Kubernetes deployment manifests
-└── docker-compose.yml        # Local development orchestration
+├── docker-compose.yml              # Standalone deployment (includes Prometheus + Jaeger)
+└── docker-compose.otel-demo.yml    # Connect to OpenTelemetry Demo
 ```
 
 ## Tech Stack
 
 - **Backend:** Node.js, Express, WebSocket (ws), Prometheus client, Jaeger client
 - **Frontend:** React 18, Vite, Recharts, D3.js (force-directed graph), Lucide icons
-- **Observability:** Prometheus (metrics), Jaeger (tracing & topology discovery), OpenTelemetry
-- **Infrastructure:** Docker, Kubernetes, Nginx
+- **Observability:** Prometheus (metrics), Jaeger (tracing & topology), OpenTelemetry
+- **Infrastructure:** Docker, Docker Compose
 
 ## Getting Started
 
 ### Prerequisites
 
-- Node.js 18+
 - Docker & Docker Compose
+- Node.js 18+ (for local development only)
 
-### Quick Start (Docker)
+### Option 1: Connect to OpenTelemetry Demo (real metrics)
+
+This connects the Digital Twin to a real instrumented microservices architecture (15 services).
 
 ```bash
-docker-compose up --build
+# 1. Clone and start the OpenTelemetry Demo
+git clone https://github.com/open-telemetry/opentelemetry-demo.git
+cd opentelemetry-demo
+docker compose -f compose.yaml -f compose.observability.yaml up -d
+
+# 2. Wait for services to be ready (~2-3 min)
+docker compose -f compose.yaml -f compose.observability.yaml ps
+
+# 3. Start the Digital Twin
+cd /path/to/Digital-Twin-Archi-Microservices
+docker compose -f docker-compose.otel-demo.yml up --build
 ```
 
-- Frontend: http://localhost:3000
-- Backend API: http://localhost:3001/api
-- WebSocket: ws://localhost:3001/ws
-- Jaeger UI: http://localhost:16686
+**URLs:**
+| Service | URL |
+|---------|-----|
+| Digital Twin Dashboard | http://localhost:3000 |
+| Backend API | http://localhost:3001/api |
+| Prometheus | http://localhost:9090 |
+| OTel Demo Shop | http://localhost:8080 |
 
-### Local Development
+> **Tip:** Increase traffic via the Locust load generator (check port with `docker port load-generator 8089`)
+
+**To stop everything:**
+```bash
+cd /path/to/Digital-Twin-Archi-Microservices
+docker compose -f docker-compose.otel-demo.yml down
+
+cd /path/to/opentelemetry-demo
+docker compose -f compose.yaml -f compose.observability.yaml down
+```
+
+### Option 2: Demo Mode (synthetic data, no dependencies)
+
+```bash
+docker compose up --build
+```
+
+Or set `DEMO_MODE=true` in `backend/.env` and run locally:
+```bash
+cd backend && npm install && npm run dev
+cd frontend && npm install && npm run dev
+```
+
+### Option 3: Local Development
 
 ```bash
 # Backend
@@ -64,10 +112,6 @@ cd frontend
 npm install
 npm run dev
 ```
-
-### Demo Mode
-
-Set `DEMO_MODE=true` in the backend `.env` to use synthetic data without a live Prometheus/Jaeger cluster.
 
 ## API Endpoints
 
@@ -83,9 +127,20 @@ Set `DEMO_MODE=true` in the backend `.env` to use synthetic data without a live 
 | `/api/metrics/prometheus/status` | GET | Prometheus connectivity check |
 | `/api/metrics/jaeger/status` | GET | Jaeger connectivity + discovered dependencies |
 
+## Simulation Scenarios
+
+| Scenario | Description |
+|----------|-------------|
+| Load Spike | Sudden traffic surge — predicts latency/error impact |
+| Service Failure | Complete/partial outage with cascading failure propagation |
+| Scale Up | Add replicas — predicts latency improvement (M/M/c model) |
+| Network Partition | Packet loss between services |
+| Memory Pressure | GC pauses and OOM risk simulation |
+| Cache Failure | Cache store down — fallback to direct DB calls |
+
 ## Configuration
 
-See `backend/.env.example` for all available environment variables:
+See `backend/.env.example` for all environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -94,13 +149,3 @@ See `backend/.env.example` for all available environment variables:
 | `JAEGER_URL` | http://localhost:16686 | Jaeger query API URL |
 | `SCRAPE_INTERVAL_MS` | 15000 | Metrics scrape interval (ms) |
 | `DEMO_MODE` | true | Use synthetic data |
-
-## Connecting to a Real Architecture
-
-To monitor a real microservices architecture:
-
-1. Set `DEMO_MODE=false`
-2. Point `PROMETHEUS_URL` to your Prometheus instance
-3. Point `JAEGER_URL` to your Jaeger query endpoint
-4. Your services must expose metrics via Istio or OpenTelemetry
-5. The topology will be auto-discovered from Jaeger traces

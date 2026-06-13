@@ -18,6 +18,8 @@ const topologyDiscovery = require('./topology-discovery');
 const jaegerClient     = require('./jaeger-client');
 const simulator        = require('../simulator/scenario-engine');
 const loadInjector     = require('../simulator/load-injector');
+const optimizer        = require('../optimizer/optimization-engine');
+const anomalyDetector  = require('../optimizer/anomaly-detector');
 
 const DEMO_MODE = process.env.DEMO_MODE === 'true';
 
@@ -52,6 +54,7 @@ async function collectMetrics() {
       const topology  = loadInjector.generateSyntheticTopology();
       latestSnapshot  = { collectedAt: Date.now(), services, topology };
       cache.set('snapshot', latestSnapshot);
+      anomalyDetector.recordSnapshot(services);
       broadcast({ type: 'METRICS_UPDATE', payload: latestSnapshot });
       console.log(`[Collector][DEMO] Generated synthetic snapshot for ${services.length} services`);
       return;
@@ -103,6 +106,7 @@ async function collectMetrics() {
     };
 
     cache.set('snapshot', latestSnapshot);
+    anomalyDetector.recordSnapshot(serviceSnapshots);
     broadcast({ type: 'METRICS_UPDATE', payload: latestSnapshot });
     console.log(`[Collector] Scraped ${services.length} services @ ${new Date().toISOString()}`);
   } catch (err) {
@@ -288,6 +292,50 @@ app.get('/api/topology/discover', async (_req, res) => {
   topologyDiscovery.resetCache();
   const topology = await topologyDiscovery.discoverTopology();
   res.json({ source: 'jaeger', topology, dependencyMap: topologyDiscovery.getDependencyMap() });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Optimization Routes
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/optimize/recommendations
+ * Returns optimization recommendations based on current metrics.
+ */
+app.get('/api/optimize/recommendations', (_req, res) => {
+  const snapshot = cache.get('snapshot');
+  if (!snapshot) {
+    return res.status(503).json({ error: 'No metrics available for optimization.' });
+  }
+  const recommendations = optimizer.generateRecommendations(snapshot.services, snapshot.topology);
+  res.json({ recommendations, sla: optimizer.SLA, analyzedAt: Date.now() });
+});
+
+/**
+ * GET /api/optimize/scaling
+ * Returns optimal scaling plan for all services.
+ */
+app.get('/api/optimize/scaling', (_req, res) => {
+  const snapshot = cache.get('snapshot');
+  if (!snapshot) {
+    return res.status(503).json({ error: 'No metrics available for optimization.' });
+  }
+  const plan = optimizer.computeOptimalScaling(snapshot.services);
+  res.json({ ...plan, computedAt: Date.now() });
+});
+
+/**
+ * GET /api/optimize/anomalies
+ * Returns detected anomalies and trend predictions.
+ */
+app.get('/api/optimize/anomalies', (_req, res) => {
+  const snapshot = cache.get('snapshot');
+  if (!snapshot) {
+    return res.status(503).json({ error: 'No metrics available.' });
+  }
+  const anomalies = anomalyDetector.detectAnomalies(snapshot.services);
+  const status = anomalyDetector.getServiceStatus(snapshot.services);
+  res.json({ anomalies, serviceStatus: status, config: anomalyDetector.CONFIG, analyzedAt: Date.now() });
 });
 
 // ─────────────────────────────────────────────────────────────

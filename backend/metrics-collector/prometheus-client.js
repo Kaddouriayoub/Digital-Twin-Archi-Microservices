@@ -61,24 +61,17 @@ async function queryRange(query, startSec, endSec, step = '15s') {
 // ──────────────────────────────────────────────
 
 /**
- * Returns all service names discovered from Prometheus targets or metrics.
+ * Returns all service names discovered from Prometheus metrics.
  */
 async function getServiceList() {
   try {
-    // Try to get services from metric labels (works with OTel Collector)
-    const jobResults = await queryInstant('count by (exported_job) (otel_http_server_duration_milliseconds_count)');
-    if (jobResults.length > 0) {
-      return jobResults.map(r => r.metric.exported_job).filter(Boolean);
+    // Get unique service_name values from OTel Demo metrics
+    const resp = await axios.get(`${PROMETHEUS_URL}/api/v1/label/service_name/values`, { timeout: 8000 });
+    if (resp.data.status === 'success' && resp.data.data.length > 0) {
+      const exclude = ['otelcol-contrib', 'jaeger', 'load-generator', 'frontend-proxy', 'frontend-web'];
+      return resp.data.data.filter(s => !exclude.includes(s));
     }
-
-    const resp = await axios.get(`${PROMETHEUS_URL}/api/v1/targets`, { timeout: 8000 });
-    const activeTargets = resp.data.data.activeTargets || [];
-    const services = new Set();
-    activeTargets.forEach(t => {
-      const app = t.labels.app || t.labels.job || t.labels.service;
-      if (app) services.add(app);
-    });
-    return Array.from(services);
+    return [];
   } catch (err) {
     console.error('[PrometheusClient] getServiceList failed:', err.message);
     return [];
@@ -87,23 +80,11 @@ async function getServiceList() {
 
 /**
  * P99 request latency for all services (milliseconds).
- * Supports Istio, standard OTel, and OTel Collector exported metrics.
+ * Uses traces_span_metrics (generated from Jaeger spans) as universal source.
  */
 async function getLatencyP99() {
-  // OTel Collector format (otel_ prefix, exported_job label)
-  const query = `histogram_quantile(0.99, sum(rate(otel_http_server_duration_milliseconds_bucket[5m])) by (exported_job, le))`;
-  const results = await queryInstant(query);
-  if (results.length > 0) return results;
-
-  // Istio sidecar metric
-  const istio = await queryInstant(
-    `histogram_quantile(0.99, sum(rate(istio_request_duration_milliseconds_bucket[5m])) by (destination_service_name, le))`
-  );
-  if (istio.length > 0) return istio;
-
-  // Fallback: generic OTEL http server histogram
   return queryInstant(
-    `histogram_quantile(0.99, sum(rate(http_server_request_duration_seconds_bucket[5m])) by (job, le))`
+    `histogram_quantile(0.99, sum(rate(traces_span_metrics_duration_milliseconds_bucket{span_kind="SPAN_KIND_SERVER"}[10m])) by (service_name, le))`
   );
 }
 
@@ -111,60 +92,37 @@ async function getLatencyP99() {
  * Request rate (RPS) per service.
  */
 async function getThroughput() {
-  // OTel Collector format
-  const query = `sum(rate(otel_http_server_duration_milliseconds_count[1m])) by (exported_job)`;
-  const results = await queryInstant(query);
-  if (results.length > 0) return results;
-
-  // Istio
-  const istio = await queryInstant(`sum(rate(istio_requests_total[1m])) by (destination_service_name)`);
-  if (istio.length > 0) return istio;
-
-  return queryInstant(`sum(rate(http_server_requests_total[1m])) by (job)`);
-}
-
-/**
- * Error rate (4xx + 5xx) per service.
- */
-async function getErrorRates() {
-  // OTel Collector format
-  const otel = await queryInstant(`
-    sum(rate(otel_http_server_duration_milliseconds_count{http_status_code=~"[45].."}[5m])) by (exported_job)
-    /
-    sum(rate(otel_http_server_duration_milliseconds_count[5m])) by (exported_job)
-  `);
-  if (otel.length > 0) return otel;
-
-  // Istio
-  const istio = await queryInstant(`
-    sum(rate(istio_requests_total{response_code=~"[45][0-9][0-9]"}[5m])) by (destination_service_name)
-    /
-    sum(rate(istio_requests_total[5m])) by (destination_service_name)
-  `);
-  if (istio.length > 0) return istio;
-
   return queryInstant(
-    `sum(rate(http_server_requests_total{status=~"[45][0-9][0-9]"}[5m])) by (job)
-     /
-     sum(rate(http_server_requests_total[5m])) by (job)`
+    `sum(rate(traces_span_metrics_calls_total{span_kind="SPAN_KIND_SERVER"}[10m])) by (service_name)`
   );
 }
 
 /**
- * CPU usage per Pod (millicores).
+ * Error rate per service (based on span status ERROR).
+ */
+async function getErrorRates() {
+  return queryInstant(`
+    sum(rate(traces_span_metrics_calls_total{span_kind="SPAN_KIND_SERVER", status_code="STATUS_CODE_ERROR"}[10m])) by (service_name)
+    /
+    sum(rate(traces_span_metrics_calls_total{span_kind="SPAN_KIND_SERVER"}[10m])) by (service_name)
+  `);
+}
+
+/**
+ * CPU usage per service (millicores) - uses container metrics from OTel collector.
  */
 async function getCpuUsage() {
   return queryInstant(
-    `sum(rate(container_cpu_usage_seconds_total{container!=""}[5m])) by (pod) * 1000`
+    `sum(rate(container_cpu_usage_nanoseconds_total[5m])) by (service_name) / 1e6`
   );
 }
 
 /**
- * Memory usage per Pod (MiB).
+ * Memory usage per service (MiB).
  */
 async function getMemoryUsage() {
   return queryInstant(
-    `sum(container_memory_working_set_bytes{container!=""}) by (pod) / 1048576`
+    `sum(container_memory_usage_total_bytes) by (service_name) / 1048576`
   );
 }
 
@@ -179,16 +137,14 @@ async function getTopologyEdges() {
 
 /**
  * P99 latency over a time range for a single service (for charts).
- * @param {string} serviceName
- * @param {number} durationMinutes - how far back
  */
 async function getLatencyHistory(serviceName, durationMinutes = 60) {
   const now = Math.floor(Date.now() / 1000);
   const start = now - durationMinutes * 60;
-  const query = `histogram_quantile(0.99,
-    sum(rate(istio_request_duration_milliseconds_bucket{destination_service_name="${serviceName}"}[5m])) by (le)
-  )`;
-  return queryRange(query, start, now, '1m');
+  return queryRange(
+    `histogram_quantile(0.99, sum(rate(traces_span_metrics_duration_milliseconds_bucket{service_name="${serviceName}", span_kind="SPAN_KIND_SERVER"}[10m])) by (le))`,
+    start, now, '1m'
+  );
 }
 
 /**
@@ -197,8 +153,10 @@ async function getLatencyHistory(serviceName, durationMinutes = 60) {
 async function getThroughputHistory(serviceName, durationMinutes = 60) {
   const now = Math.floor(Date.now() / 1000);
   const start = now - durationMinutes * 60;
-  const query = `sum(rate(istio_requests_total{destination_service_name="${serviceName}"}[1m]))`;
-  return queryRange(query, start, now, '1m');
+  return queryRange(
+    `sum(rate(traces_span_metrics_calls_total{service_name="${serviceName}", span_kind="SPAN_KIND_SERVER"}[10m]))`,
+    start, now, '1m'
+  );
 }
 
 module.exports = {

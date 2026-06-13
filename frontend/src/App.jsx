@@ -8,9 +8,10 @@ import ServiceMap       from './components/ServiceMap';
 import MetricsPanel     from './components/MetricsPanel';
 import PerformanceChart from './components/PerformanceChart';
 import SimulatorControl from './components/SimulatorControl';
+import OptimizePanel    from './components/OptimizePanel';
 import {
   Activity, Wifi, WifiOff, RefreshCw, AlertCircle,
-  BarChart2, Map, Sliders, Clock
+  BarChart2, Map, Sliders, Clock, Zap
 } from 'lucide-react';
 
 // ── Connection status pill ────────────────────────────────────
@@ -36,6 +37,7 @@ const TABS = [
   { id: 'metrics',  label: 'Metrics',  Icon: BarChart2 },
   { id: 'charts',   label: 'Charts',   Icon: Activity },
   { id: 'simulate', label: 'Simulate', Icon: Sliders },
+  { id: 'optimize', label: 'Optimize', Icon: Zap },
 ];
 
 export default function App() {
@@ -168,6 +170,12 @@ export default function App() {
                     />
                   </div>
                 </div>
+              </div>
+            )}
+
+            {activeTab === 'optimize' && (
+              <div className="tab-content scrollable">
+                <OptimizePanel />
               </div>
             )}
           </>
