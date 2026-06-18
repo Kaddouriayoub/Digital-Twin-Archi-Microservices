@@ -6,6 +6,9 @@
 'use strict';
 
 const { SLA } = require('./optimization-engine');
+const axios = require('axios');
+
+const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8001';
 
 // ─────────────────────────────────────────────────────────────
 // Configuration
@@ -256,10 +259,66 @@ function getServiceStatus(services) {
   });
 }
 
+/**
+ * Enhanced detection: runs statistical methods + ML sidecar in parallel.
+ * Falls back to statistical-only if ML service is unavailable.
+ */
+async function detectWithML(services) {
+  const statAlerts = detectAnomalies(services);
+
+  const mlResults = {};
+  await Promise.all(services.map(async (svc) => {
+    try {
+      const { data } = await axios.post(`${ML_SERVICE_URL}/detect`, {
+        service_name: svc.name,
+        metrics: {
+          latency_p99: svc.latencyP99Ms || 0,
+          error_rate: svc.errorRatePct || 0,
+          throughput_rps: svc.throughputRps || 0,
+          cpu_percent: svc.cpuPercent || 0,
+          memory_mb: svc.memoryMib || 0,
+        },
+      }, { timeout: 2000 });
+      mlResults[svc.name] = data;
+    } catch { /* ML service unavailable — skip */ }
+  }));
+
+  // Combine: enrich statistical alerts with ML verdict
+  for (const alert of statAlerts) {
+    const ml = mlResults[alert.service];
+    if (ml && ml.trained) {
+      alert.ml_score = ml.score;
+      alert.ml_severity = ml.severity;
+      alert.combined_verdict = ml.is_anomaly ? 'confirmed' : 'statistical_only';
+    }
+  }
+
+  // Add ML-only anomalies (not caught by statistics)
+  const statServices = new Set(statAlerts.map(a => a.service));
+  for (const [svc, ml] of Object.entries(mlResults)) {
+    if (ml.is_anomaly && ml.trained && !statServices.has(svc)) {
+      statAlerts.push({
+        service: svc,
+        type: 'ml_anomaly',
+        severity: 'warning',
+        metric: 'multi_feature',
+        message: `ML détecte une anomalie (score: ${ml.score}, sévérité: ${ml.severity})`,
+        details: { mlScore: ml.score, mlSeverity: ml.severity },
+        ml_score: ml.score,
+        ml_severity: ml.severity,
+        combined_verdict: 'ml_only',
+      });
+    }
+  }
+
+  return statAlerts;
+}
+
 module.exports = {
   recordMetrics,
   recordSnapshot,
   detectAnomalies,
+  detectWithML,
   getServiceStatus,
   CONFIG,
   // Exported for testing

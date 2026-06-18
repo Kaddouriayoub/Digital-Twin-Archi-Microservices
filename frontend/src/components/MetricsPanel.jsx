@@ -4,7 +4,8 @@
 // CPU, memory, and health score with colour-coded status.
 // ============================================================
 import React, { useState } from 'react';
-import { Activity, Zap, AlertTriangle, Cpu, Database, Heart } from 'lucide-react';
+import { Activity, Zap, AlertTriangle, Cpu, Database, Heart, ChevronDown } from 'lucide-react';
+import AnomalyFeed from './anomalies/AnomalyFeed';
 
 // ── Utility helpers ──────────────────────────────────────────
 function healthColor(score) {
@@ -99,10 +100,13 @@ function MetricBadge({ icon, label, value, warn, crit }) {
 }
 
 // ── MetricsPanel ─────────────────────────────────────────────
-export default function MetricsPanel({ services, simulationResult }) {
+export default function MetricsPanel({ services, simulationResult, anomalies = [], onDismissAnomaly, onNavigateSimulate }) {
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState('health');
   const [selectedDetail, setSelectedDetail] = useState(null);
+  const [anomalyCollapsed, setAnomalyCollapsed] = useState(false);
+
+  const activeAnomalies = anomalies.filter(a => a.status === 'active');
 
   const simServices  = simulationResult?.result || [];
   const isSimMode    = simServices.length > 0;
@@ -119,6 +123,21 @@ export default function MetricsPanel({ services, simulationResult }) {
 
   return (
     <div className="metrics-panel">
+      {/* Active Anomalies (collapsible) */}
+      {activeAnomalies.length > 0 && (
+        <div className="anomalies-inline-section">
+          <div className="anomalies-inline-header" onClick={() => setAnomalyCollapsed(c => !c)}>
+            <span><AlertTriangle size={14} style={{ color: 'var(--red)' }} /> Active Anomalies ({activeAnomalies.length})</span>
+            <ChevronDown size={14} style={{ transform: anomalyCollapsed ? 'rotate(-90deg)' : 'none', transition: '0.2s' }} />
+          </div>
+          {!anomalyCollapsed && (
+            <div className="anomalies-inline-body">
+              <AnomalyFeed anomalies={anomalies} onDismiss={onDismissAnomaly} onSimulate={onNavigateSimulate} />
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Toolbar */}
       <div className="panel-toolbar">
         <input
