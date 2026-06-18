@@ -1,9 +1,11 @@
 // ============================================================
 // src/components/OptimizePanel.jsx
 // Displays optimization recommendations and scaling plan.
+// Enhanced: SLA Risk Forecast cards from predictions.
 // ============================================================
 import React, { useState, useEffect } from 'react';
-import { AlertTriangle, AlertCircle, Info, TrendingUp, TrendingDown, Zap, RefreshCw } from 'lucide-react';
+import { AlertTriangle, AlertCircle, Info, TrendingUp, TrendingDown, Zap, RefreshCw, Loader2 } from 'lucide-react';
+import { manualScale } from '../api/client';
 
 const API_URL = import.meta.env.VITE_API_URL || '/api';
 
@@ -13,7 +15,79 @@ const SEVERITY_CONFIG = {
   info:     { color: '#3b82f6', Icon: Info, label: 'Info' },
 };
 
-export default function OptimizePanel() {
+// ── SLA Forecast Card ────────────────────────────────────────
+function SlaForecastCard({ prediction, service }) {
+  const [countdown, setCountdown] = useState('');
+  const [scaleState, setScaleState] = useState(null); // null|'loading'|'done'
+
+  const risk = prediction.risk_level || 'low';
+  const breachProb = prediction.breach_probability || 0;
+  const currentLatency = service?.latencyP99Ms || 0;
+  const predictedLatency = prediction.predicted_latency_p99 || currentLatency;
+  const deltaPct = currentLatency > 0 ? Math.round(((predictedLatency - currentLatency) / currentLatency) * 100) : 0;
+  const horizon = prediction.horizon_minutes || 30;
+  const receivedAt = prediction.receivedAt || Date.now();
+  // Estimate breach time: proportional to when predicted value crosses SLA
+  const slaMs = 200;
+  const breachMinutes = predictedLatency > slaMs && currentLatency < slaMs
+    ? Math.round(horizon * ((slaMs - currentLatency) / (predictedLatency - currentLatency)))
+    : horizon;
+
+  // Countdown timer
+  useEffect(() => {
+    const targetTime = receivedAt + breachMinutes * 60000;
+    const update = () => {
+      const remaining = Math.max(0, targetTime - Date.now());
+      const min = Math.floor(remaining / 60000);
+      const sec = Math.floor((remaining % 60000) / 1000);
+      setCountdown(`~${min}min ${sec}s`);
+    };
+    update();
+    const iv = setInterval(update, 1000);
+    return () => clearInterval(iv);
+  }, [receivedAt, breachMinutes]);
+
+  const riskColor = risk === 'high' ? '#ef4444' : risk === 'medium' ? '#f59e0b' : '#10b981';
+  const riskIcon = risk === 'high' ? '🔴' : risk === 'medium' ? '🟡' : '🟢';
+
+  async function handleScale() {
+    setScaleState('loading');
+    try {
+      const currentReplicas = service?.replicas || 2;
+      await manualScale(prediction.service, currentReplicas + 2, 'predictive_scaling');
+      setScaleState('done');
+    } catch {
+      setScaleState('error');
+    }
+  }
+
+  return (
+    <div className="sla-forecast-card" style={{ borderLeftColor: riskColor }}>
+      <div className="sfc-header">
+        <span className="sfc-service">{riskIcon} {prediction.service}</span>
+        <span className="sfc-risk" style={{ color: riskColor }}>{risk.toUpperCase()} RISK</span>
+      </div>
+      <div className="sfc-breach">Latency breach in {countdown}</div>
+      <div className="sfc-delta">
+        Current: {Math.round(currentLatency)}ms → Predicted: {Math.round(predictedLatency)}ms
+        <span style={{ color: deltaPct > 0 ? 'var(--red)' : 'var(--green)' }}> ({deltaPct > 0 ? '+' : ''}{deltaPct}%)</span>
+      </div>
+      <div className="sfc-confidence">Confidence: {Math.round(breachProb * 100)}%</div>
+      <div className="sfc-action">
+        {scaleState === 'done' ? (
+          <span className="sfc-applied">✓ Scaled</span>
+        ) : (
+          <button className="sfc-scale-btn" onClick={handleScale} disabled={scaleState === 'loading'}>
+            {scaleState === 'loading' ? <Loader2 size={12} className="spin" /> : '⚡'} Scale now — prevent breach
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Main OptimizePanel ───────────────────────────────────────
+export default function OptimizePanel({ predictions = {}, services = [] }) {
   const [recommendations, setRecommendations] = useState([]);
   const [scalingPlan, setScalingPlan] = useState(null);
   const [anomalies, setAnomalies] = useState([]);
@@ -44,12 +118,35 @@ export default function OptimizePanel() {
 
   useEffect(() => { fetchData(); const iv = setInterval(fetchData, 15000); return () => clearInterval(iv); }, []);
 
-  if (loading) {
+  // Build sorted forecast cards from predictions
+  const RISK_ORDER = { high: 0, medium: 1, low: 2 };
+  const forecastCards = Object.values(predictions)
+    .filter(p => p.service && (p.risk_level === 'medium' || p.risk_level === 'high'))
+    .sort((a, b) => (RISK_ORDER[a.risk_level] || 9) - (RISK_ORDER[b.risk_level] || 9));
+
+  if (loading && forecastCards.length === 0) {
     return <div className="loading-screen"><div className="loading-spinner" /><p>Analyzing metrics...</p></div>;
   }
 
   return (
     <div className="optimize-panel">
+
+      {/* ── SLA Risk Forecast (Feature 2) ─────────────────── */}
+      {forecastCards.length > 0 && (
+        <div className="sla-forecast-section">
+          <div className="sla-forecast-title">⚠️ SLA Risk Forecast</div>
+          <div className="sla-forecast-grid">
+            {forecastCards.map(p => (
+              <SlaForecastCard
+                key={p.service}
+                prediction={p}
+                service={services.find(s => s.name === p.service)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="optimize-header">
         <div className="optimize-tabs">
           <button className={`opt-tab ${activeView === 'recommendations' ? 'active' : ''}`} onClick={() => setActiveView('recommendations')}>
@@ -158,13 +255,15 @@ export default function OptimizePanel() {
                   <div className="rec-header">
                     {a.type === 'trend' ? <TrendingUp size={16} color="#f59e0b" /> : <AlertCircle size={16} color={SEVERITY_CONFIG[a.severity]?.color} />}
                     <span className="rec-service">{a.service}</span>
-                    <span className="rec-type-badge">{a.type === 'anomaly' ? 'Z-score' : a.type === 'trend' ? 'Tendance' : 'EWMA'}</span>
+                    <span className="rec-type-badge">{a.type === 'anomaly' ? 'Z-score' : a.type === 'trend' ? 'Tendance' : a.type === 'ml_anomaly' ? 'ML' : 'EWMA'}</span>
+                    {a.combined_verdict && <span className={`rec-type-badge ml-badge ${a.combined_verdict}`}>{a.combined_verdict === 'confirmed' ? '✓ Confirmé ML' : a.combined_verdict === 'ml_only' ? '🤖 ML seul' : 'Stats seul'}</span>}
                     <span className="rec-severity" style={{ color: SEVERITY_CONFIG[a.severity]?.color }}>{SEVERITY_CONFIG[a.severity]?.label}</span>
                   </div>
                   <p className="rec-message">{a.message}</p>
                   {a.details && (
                     <div className="rec-details">
                       {a.details.zScore != null && <span>z={a.details.zScore}</span>}
+                      {a.ml_score != null && <span>ML score={a.ml_score}</span>}
                       {a.details.timeToSLABreachMin != null && <span>SLA breach: ~{a.details.timeToSLABreachMin}min</span>}
                       {a.details.deviationPct != null && <span>+{a.details.deviationPct}% vs EWMA</span>}
                     </div>
