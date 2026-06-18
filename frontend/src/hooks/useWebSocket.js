@@ -34,7 +34,7 @@ export default function useWebSocket() {
       ws.onerror = () => setStatus('error');
 
       ws.onclose = () => {
-        setStatus('closed');
+        setStatus(retryRef.current > 0 ? 'reconnecting' : 'closed');
         // Exponential backoff: 1s, 2s, 4s … capped at 30s
         const delay = Math.min(1000 * 2 ** retryRef.current, 30000);
         retryRef.current += 1;

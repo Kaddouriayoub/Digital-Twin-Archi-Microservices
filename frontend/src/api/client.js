@@ -39,3 +39,23 @@ export const fetchHealth = () => apiFetch('/health');
 
 /** GET /api/metrics/prometheus/status */
 export const fetchPrometheusStatus = () => apiFetch('/metrics/prometheus/status');
+
+/** GET /api/kafka/status */
+export const fetchKafkaStatus = () => apiFetch('/kafka/status');
+
+/** GET /api/ml-status */
+export const fetchMlStatus = () => apiFetch('/ml-status');
+
+/** GET /api/control/status */
+export const fetchControlStatus = () => apiFetch('/control/status');
+
+/** POST /api/control/scale */
+export const manualScale = (service, replicas, reason = 'manual') =>
+  apiFetch('/control/scale', { method: 'POST', body: JSON.stringify({ service, replicas, reason }) });
+
+/** POST /api/control/toggle-dryrun */
+export const toggleDryRun = () => apiFetch('/control/toggle-dryrun', { method: 'POST' });
+
+/** GET /api/history/:serviceId?hours=N */
+export const fetchHistory = (serviceId, hours = 24) =>
+  apiFetch(`/history/${serviceId}?hours=${hours}`);

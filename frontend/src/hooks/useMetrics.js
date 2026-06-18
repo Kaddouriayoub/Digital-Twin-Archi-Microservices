@@ -28,8 +28,12 @@ export default function useMetrics() {
   const [lastUpdated,       setLastUpdated]        = useState(null);
   const [error,             setError]             = useState(null);
   const [loading,           setLoading]           = useState(true);
+  const [controlActions,    setControlActions]    = useState([]);
+  const [anomalies,         setAnomalies]         = useState([]);
+  const [predictions,       setPredictions]       = useState({}); // serviceId → latest prediction
 
   const pollTimerRef = useRef(null);
+  const batchRef = useRef({ pending: null, scheduled: false });
 
   // ── Apply a snapshot (from WS or REST) ───────────────────
   const applySnapshot = useCallback((snapshot) => {
@@ -41,11 +45,35 @@ export default function useMetrics() {
     setError(null);
   }, []);
 
-  // ── WebSocket push handler ─────────────────────────────
+  // ── WebSocket push handler (batched for performance) ───
   useEffect(() => {
     if (!latestMessage) return;
     if (latestMessage.type === 'METRICS_UPDATE') {
-      applySnapshot(latestMessage.payload);
+      // Batch: collect the snapshot and apply on next animation frame
+      // This prevents multiple rapid METRICS_UPDATE messages from causing
+      // separate re-renders — only the last snapshot in a frame wins.
+      batchRef.current.pending = latestMessage.payload;
+      if (!batchRef.current.scheduled) {
+        batchRef.current.scheduled = true;
+        requestAnimationFrame(() => {
+          if (batchRef.current.pending) {
+            applySnapshot(batchRef.current.pending);
+            batchRef.current.pending = null;
+          }
+          batchRef.current.scheduled = false;
+        });
+      }
+    }
+    if (latestMessage.type === 'CONTROL_ACTION') {
+      setControlActions(prev => [latestMessage.payload, ...prev].slice(0, 50));
+    }
+    if (latestMessage.type === 'ANOMALY_DETECTED') {
+      const anomaly = { ...latestMessage.payload || latestMessage, id: latestMessage.id || Date.now().toString(36) + Math.random().toString(36).slice(2, 6), detectedAt: Date.now(), status: 'active' };
+      setAnomalies(prev => [anomaly, ...prev].slice(0, 200));
+    }
+    if (latestMessage.type === 'PREDICTION') {
+      const p = latestMessage.payload || latestMessage;
+      if (p.service) setPredictions(prev => ({ ...prev, [p.service]: { ...p, receivedAt: Date.now() } }));
     }
   }, [latestMessage, applySnapshot]);
 
@@ -70,6 +98,13 @@ export default function useMetrics() {
     pollTimerRef.current = setInterval(pollOnce, POLL_INTERVAL_MS);
     return () => clearInterval(pollTimerRef.current);
   }, [wsStatus, pollOnce]);
+
+  // Manual refresh via keyboard shortcut
+  useEffect(() => {
+    const handler = () => pollOnce();
+    window.addEventListener('dt-refresh', handler);
+    return () => window.removeEventListener('dt-refresh', handler);
+  }, [pollOnce]);
 
   // ── One-time initialisation ───────────────────────────
   useEffect(() => {
@@ -101,6 +136,10 @@ export default function useMetrics() {
 
   const clearSimulation = useCallback(() => setSimulationResult(null), []);
 
+  const dismissAnomaly = useCallback((id) => {
+    setAnomalies(prev => prev.map(a => a.id === id ? { ...a, status: 'resolved' } : a));
+  }, []);
+
   return {
     // data
     services,
@@ -110,6 +149,9 @@ export default function useMetrics() {
     simulationResult,
     lastUpdated,
     wsStatus,
+    controlActions,
+    anomalies,
+    predictions,
     // state flags
     loading,
     error,
@@ -117,5 +159,6 @@ export default function useMetrics() {
     // actions
     runSimulation,
     clearSimulation,
+    dismissAnomaly,
   };
 }
