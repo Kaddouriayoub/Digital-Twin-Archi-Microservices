@@ -1,17 +1,21 @@
-version: '3.9'
-
 # ─────────────────────────────────────────────────────────────
-# Digital Twin — connects to OpenTelemetry Demo's infra
-# Run AFTER: docker compose -f compose.yaml -f compose.observability.yaml up -d
-# in the opentelemetry-demo directory
+# Digital Twin — connects to Sock Shop's network
+# 
+# Step 1: Start Sock Shop + monitoring
+#   cd /path/to/microservices-demo/deploy/docker-compose
+#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+#
+# Step 2: Start Digital Twin
+#   cd /path/to/digital-twin-microservices
+#   docker compose -f docker-compose-sockshop.yml up --build
 # ─────────────────────────────────────────────────────────────
 
 services:
 
-  # ── Kafka (KRaft mode — Digital Thread) ─────────────────────
+  # ── Kafka (Digital Thread) ────────────────────────────────
   kafka:
     image: apache/kafka:3.7.0
-    container_name: dt-kafka
+    container_name: dt-kafka-sockshop
     ports:
       - "9092:9092"
     environment:
@@ -24,10 +28,9 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      CLUSTER_ID: "digital-twin-kafka-cluster"
-    restart: unless-stopped
+      CLUSTER_ID: "digital-twin-sockshop-cluster"
     networks:
-      - otel-demo
+      - sock-shop
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 9092"]
       interval: 10s
@@ -40,26 +43,22 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: dt-backend
+    container_name: dt-backend-sockshop
     ports:
       - "3001:3001"
     environment:
       - NODE_ENV=development
       - PORT=3001
       - PROMETHEUS_URL=http://prometheus:9090
-      - JAEGER_URL=http://jaeger:16686/jaeger/ui
       - KAFKA_BROKERS=kafka:9092
       - SCRAPE_INTERVAL_MS=15000
       - DEMO_MODE=false
       - DT_DRY_RUN=true
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       kafka:
         condition: service_healthy
-    restart: unless-stopped
     networks:
-      - otel-demo
+      - sock-shop
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/health"]
       interval: 15s
@@ -72,20 +71,18 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: dt-frontend
+    container_name: dt-frontend-sockshop
     ports:
-      - "3000:80"
+      - "3002:80"
     environment:
       - VITE_API_URL=http://localhost:3001/api
       - VITE_WS_URL=ws://localhost:3001/ws
     depends_on:
       backend:
         condition: service_healthy
-    restart: unless-stopped
     networks:
-      - otel-demo
+      - sock-shop
 
 networks:
-  otel-demo:
-    name: opentelemetry-demo
+  sock-shop:
     external: true

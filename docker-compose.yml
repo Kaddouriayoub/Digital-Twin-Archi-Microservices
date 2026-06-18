@@ -15,14 +15,24 @@ services:
       - PORT=3001
       - PROMETHEUS_URL=http://prometheus:9090
       - JAEGER_URL=http://jaeger:16686
+      - KAFKA_BROKERS=kafka:9092
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:postgres@timescaledb:5432/digitaltwin
+      - ML_SERVICE_URL=http://ml-service:8001
       - SCRAPE_INTERVAL_MS=15000
       - DEMO_MODE=false
+      - DT_DRY_RUN=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
     networks:
       - dt-network
     depends_on:
       - prometheus
       - jaeger
+      - kafka
+      - redis
+      - timescaledb
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/health"]
       interval: 15s
@@ -91,6 +101,116 @@ services:
     restart: unless-stopped
     networks:
       - dt-network
+
+  # ── Kafka (KRaft mode — no Zookeeper) ──────────────────────
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: dt-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      CLUSTER_ID: "digital-twin-kafka-cluster"
+    volumes:
+      - kafka-data:/tmp/kraft-combined-logs
+    restart: unless-stopped
+    networks:
+      - dt-network
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ── Kafka UI (debug / observe the Digital Thread) ─────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: dt-kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=digital-twin
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - dt-network
+
+  # ── ML Service (Isolation Forest Anomaly Detection) ────────
+  ml-service:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile
+    container_name: dt-ml-service
+    ports:
+      - "8001:8001"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@timescaledb:5432/digitaltwin
+      - MODELS_DIR=/models
+    volumes:
+      - ./ml-service/models:/models
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - dt-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Redis (Current State Store) ────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: dt-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    networks:
+      - dt-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # ── TimescaleDB (Time-Series History) ─────────────────────
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: dt-timescaledb
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=digitaltwin
+    volumes:
+      - timescaledb-data:/var/lib/postgresql/data
+      - ./backend/src/db/migrations/001_create_metrics_table.sql:/docker-entrypoint-initdb.d/001_create_metrics_table.sql:ro
+    restart: unless-stopped
+    networks:
+      - dt-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  kafka-data:
+  timescaledb-data:
 
 networks:
   dt-network:
