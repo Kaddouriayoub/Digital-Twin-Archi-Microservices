@@ -9,10 +9,26 @@ Built as a PFA (Projet de Fin d'Année) project at ENSIAS.
 - **Real-time monitoring** — Golden signals (latency, throughput, errors) via Prometheus
 - **Topology auto-discovery** — Service dependency graph from Jaeger traces
 - **What-if simulation** — 6 scenarios (load spike, service failure, scale up, network partition, memory pressure, cache miss) using M/M/c queueing theory
+- **Event-driven Digital Thread** — Apache Kafka streams all metrics, anomalies, and actions as an immutable event log
 - **Live dashboard** — WebSocket push updates with REST polling fallback
 - **Demo mode** — Synthetic data for development without a live cluster
 
 ## Architecture
+
+### Data Flow (Digital Thread via Kafka)
+
+```
+Prometheus ──→ [Collector] ──→ KafkaPublisher ──→ twin.metrics.{service}
+                    │                                       │
+                    │                               KafkaConsumer
+                    │                                       │
+                    ├──→ AnomalyDetector ──→ twin.anomalies │
+                    │                                       ▼
+                    └──→ WebSocket push ──→ React     StateManager
+                                           Dashboard
+```
+
+### Project Structure
 
 ```
 ├── backend/                  # Node.js/Express API server
@@ -22,6 +38,9 @@ Built as a PFA (Projet de Fin d'Année) project at ENSIAS.
 │   │   ├── jaeger-client.js      # Jaeger tracing API client
 │   │   ├── topology-discovery.js # Auto-discovery of service dependencies
 │   │   └── data-transformer.js   # Raw metrics normalization
+│   ├── src/kafka/            # Kafka Digital Thread layer
+│   │   ├── KafkaPublisher.js     # Publishes events to Kafka topics
+│   │   └── KafkaConsumer.js      # Consumes metrics for state updates
 │   └── simulator/            # What-if scenario simulation engine
 │       ├── scenario-engine.js    # 6 scenario handlers
 │       ├── performance-model.js  # M/M/c queueing model
@@ -31,15 +50,25 @@ Built as a PFA (Projet de Fin d'Année) project at ENSIAS.
 │       ├── components/       # UI components (topology graph, charts, simulator)
 │       ├── hooks/            # State management (WebSocket + REST)
 │       └── api/              # API client
-├── docker-compose.yml              # Standalone deployment (includes Prometheus + Jaeger)
+├── docker-compose.yml              # Standalone deployment (includes Prometheus + Jaeger + Kafka)
 └── docker-compose.otel-demo.yml    # Connect to OpenTelemetry Demo
 ```
+
+### Kafka Topics
+
+| Topic | Content |
+|-------|---------|
+| `twin.metrics.{service}` | Real-time golden signal metrics per service |
+| `twin.anomalies` | Anomaly detection events (Z-score, EWMA, trend) |
+| `twin.actions` | Control actions (scaling, circuit-breaker) |
+| `twin.simulations` | What-if simulation results |
 
 ## Tech Stack
 
 - **Backend:** Node.js, Express, WebSocket (ws), Prometheus client, Jaeger client
 - **Frontend:** React 18, Vite, Recharts, D3.js (force-directed graph), Lucide icons
 - **Observability:** Prometheus (metrics), Jaeger (tracing & topology), OpenTelemetry
+- **Streaming:** Apache Kafka (KRaft mode, no Zookeeper), kafkajs
 - **Infrastructure:** Docker, Docker Compose
 
 ## Getting Started
@@ -126,6 +155,7 @@ npm run dev
 | `/api/simulate/scenarios` | GET | List available scenarios |
 | `/api/metrics/prometheus/status` | GET | Prometheus connectivity check |
 | `/api/metrics/jaeger/status` | GET | Jaeger connectivity + discovered dependencies |
+| `/api/kafka/status` | GET | Kafka connectivity, topics, and consumer lag |
 
 ## Simulation Scenarios
 
