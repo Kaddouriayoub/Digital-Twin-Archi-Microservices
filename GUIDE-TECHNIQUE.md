@@ -976,3 +976,335 @@ services:
 │  ServiceMap ─ MetricsPanel ─ Charts ─ Simulator ─ Optimize ─ Control    │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+
+---
+
+## Phase 8 : Service ML Python (Isolation Forest — détail complet)
+
+Le `ml-service/` est un micro-service Python indépendant qui tourne en parallèle du backend Node.js. Il expose une API FastAPI sur le port **8001**.
+
+### 8.1 — Pourquoi un service séparé ?
+
+- Node.js n'a pas de librairie équivalente à scikit-learn
+- Séparer le ML permet de scaler indépendamment, de le redémarrer sans affecter le backend
+- Le modèle peut être rechargé depuis le disque sans downtime
+
+### 8.2 — Démarrage (`main.py`)
+
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 1. Charger les modèles existants depuis /models/*.joblib
+    count = detector.load_all_models()
+    print(f"[ML] Loaded {count} pre-trained models")
+
+    # 2. Lancer la boucle de réentraînement en arrière-plan
+    task = asyncio.create_task(retraining_loop(detector))
+    yield
+    task.cancel()
+```
+
+Au démarrage, tous les modèles `.joblib` présents dans `/models` sont rechargés en mémoire — pas de cold start si le container a déjà tourné.
+
+### 8.3 — Modèle Isolation Forest
+
+**Fichier : `ml-service/detector.py`**
+
+```python
+FEATURES = ["latency_p99", "error_rate", "throughput_rps", "cpu_percent", "memory_mb"]
+
+class AnomalyDetector:
+    def __init__(self, contamination: float = 0.05):
+        self.contamination = contamination  # ~5% des données d'entraînement sont des anomalies
+        self.models = {}   # { service_name: IsolationForest }
+        self.metadata = {} # { service_name: { last_trained_at, n_samples } }
+
+    def fit(self, service_name: str, X: np.ndarray) -> None:
+        model = IsolationForest(
+            contamination=self.contamination,
+            random_state=42,
+            n_estimators=100   # 100 arbres d'isolation
+        )
+        model.fit(X)
+        self.models[service_name] = model
+        self.save_model(service_name)   # → /models/checkout.joblib
+```
+
+**Paramètre `contamination=0.05`** : indique au modèle qu'environ 5% des données d'entraînement sont des anomalies. Cela calibre le seuil de décision.
+
+**`n_estimators=100`** : nombre d'arbres d'isolation. Plus il y en a, plus la décision est stable mais plus l'entraînement est lent.
+
+### 8.4 — Inférence : comment le score est calculé
+
+```python
+def predict(self, service_name: str, metrics: dict) -> dict:
+    model = self.models.get(service_name)
+
+    # Si pas de modèle → retourne "not trained" (fallback stats)
+    if model is None:
+        return {"is_anomaly": False, "score": 0.0, "severity": "none", "trained": False}
+
+    # Construction du vecteur de features dans l'ordre exact de l'entraînement
+    X = np.array([[metrics.get(f, 0.0) for f in FEATURES]])
+    # X = [[latency_p99, error_rate, throughput_rps, cpu_percent, memory_mb]]
+
+    # decision_function : score continu (négatif = anomalie)
+    score = float(model.decision_function(X)[0])
+
+    # predict : +1 = normal, -1 = anomalie
+    is_anomaly = bool(model.predict(X)[0] == -1)
+
+    # Mapping score → sévérité
+    severity = "low"
+    if is_anomaly:
+        if score < -0.30:   severity = "high"
+        elif score < -0.15: severity = "medium"
+        else:               severity = "low"
+
+    return {"is_anomaly": is_anomaly, "score": round(score, 4), "severity": severity, "trained": True}
+```
+
+**Interprétation du score :**
+
+```
+Score      │  Signification
+───────────┼─────────────────────────────────────────────────
+> 0        │  Clairement normal (facile à isoler = pas anomalie)
+0 à -0.15  │  Légèrement inhabituel → severity: low
+-0.15 à -0.30 │ Inhabituel          → severity: medium
+< -0.30    │  Très isolé = forte anomalie → severity: high
+```
+
+### 8.5 — Entraînement depuis TimescaleDB (`trainer.py`)
+
+```python
+def load_history(service_name: str, hours: int = 168) -> np.ndarray:
+    """Charge les 7 derniers jours depuis TimescaleDB."""
+    cur.execute("""
+        SELECT latency_p99, error_rate, throughput_rps, cpu_percent, memory_mb
+        FROM service_metrics
+        WHERE service_name = %s
+          AND time > NOW() - make_interval(hours => %s)
+        ORDER BY time ASC
+    """, (service_name, hours))
+    rows = cur.fetchall()
+    # Retourne matrice numpy (n_samples, 5)
+    return np.array(rows, dtype=np.float64) if rows else np.empty((0, 5))
+
+def retrain_all(detector: AnomalyDetector) -> dict:
+    services = get_all_services()   # SELECT DISTINCT service_name FROM service_metrics
+    for svc in services:
+        X = load_history(svc)
+        if len(X) >= MIN_SAMPLES:   # MIN_SAMPLES = 50
+            detector.fit(svc, X)
+            results[svc] = {"status": "trained", "samples": len(X)}
+        else:
+            results[svc] = {"status": "skipped", "reason": "insufficient_data"}
+    return results
+```
+
+**Schéma TimescaleDB utilisé :**
+
+```sql
+CREATE TABLE service_metrics (
+  time           TIMESTAMPTZ NOT NULL,
+  service_name   TEXT NOT NULL,
+  latency_p99    FLOAT,
+  error_rate     FLOAT,
+  throughput_rps FLOAT,
+  cpu_percent    FLOAT,
+  memory_mb      FLOAT
+);
+
+-- Convertit en hypertable partitionnée par le temps (TimescaleDB)
+SELECT create_hypertable('service_metrics', 'time', if_not_exists => TRUE);
+
+-- Index pour les requêtes par service
+CREATE INDEX idx_metrics_service_time ON service_metrics (service_name, time DESC);
+```
+
+La **hypertable** TimescaleDB partitionne automatiquement les données par intervalles de temps, ce qui rend les requêtes `WHERE time > NOW() - interval '7 days'` très rapides même avec des millions de lignes.
+
+### 8.6 — Réentraînement automatique toutes les 24h
+
+```python
+async def retraining_loop(detector: AnomalyDetector):
+    while True:
+        await asyncio.sleep(24 * 3600)   # attend 24h (non-bloquant)
+        retrain_all(detector)            # requête DB + fit tous les modèles
+```
+
+`asyncio.sleep` est non-bloquant — la boucle d'événements FastAPI continue de traiter les requêtes `/detect` pendant que le sleep est actif.
+
+### 8.7 — Persistance des modèles (joblib)
+
+```python
+def save_model(self, service_name: str) -> None:
+    path = f"/models/{service_name}.joblib"
+    joblib.dump(self.models[service_name], path)
+    # → /models/frontend.joblib
+    # → /models/checkout.joblib
+    # → /models/payment.joblib
+
+def load_all_models(self) -> int:
+    count = 0
+    for f in os.listdir("/models"):
+        if f.endswith(".joblib"):
+            name = f.replace(".joblib", "")
+            self.models[name] = joblib.load(f"/models/{name}.joblib")
+            count += 1
+    return count
+```
+
+Le répertoire `/models` est un **volume Docker** monté depuis l'hôte :
+```yaml
+# docker-compose.yml
+ml-service:
+  volumes:
+    - ./ml-service/models:/models
+```
+
+→ Les modèles survivent aux redémarrages du container.
+
+### 8.8 — Verdict combiné (backend Node.js)
+
+Après avoir collecté les résultats statistiques ET ML, le backend les fusionne :
+
+```javascript
+// Pour chaque alerte statistique, on cherche le verdict ML correspondant
+for (const alert of statAlerts) {
+  const ml = mlResults[alert.service];
+  if (ml && ml.trained) {
+    alert.ml_score = ml.score;
+    alert.ml_severity = ml.severity;
+    // Les deux sont d'accord → "confirmed"
+    // Stats ont détecté mais pas ML → "statistical_only"
+    alert.combined_verdict = ml.is_anomaly ? 'confirmed' : 'statistical_only';
+  }
+}
+
+// Anomalies détectées uniquement par ML (stats n'ont rien vu)
+for (const [svc, ml] of Object.entries(mlResults)) {
+  if (ml.is_anomaly && ml.trained && !statServices.has(svc)) {
+    statAlerts.push({
+      type: 'ml_anomaly',
+      combined_verdict: 'ml_only',
+      message: `ML détecte une anomalie (score: ${ml.score})`,
+    });
+  }
+}
+```
+
+| `combined_verdict` | Signification | Confiance |
+|-------------------|---------------|-----------|
+| `confirmed` | Stats ET ML signalent l'anomalie | Haute |
+| `statistical_only` | Stats ont signalé, ML dit normal | Moyenne (possible faux positif) |
+| `ml_only` | ML a détecté, stats n'ont rien vu | Moyenne (anomalie multi-variable) |
+
+---
+
+## Phase 9 : Prédiction 30 minutes
+
+À chaque cycle de collecte, en plus des alertes d'anomalies, le backend génère une **prévision** à 30 minutes pour chaque service et la diffuse via WebSocket.
+
+**Fichier : `backend/metrics-collector/api-server.js`**
+
+```javascript
+function generatePrediction(svc) {
+  const status = anomalyDetector.getServiceStatus([svc])[0];
+  const slope = status.trendSlopePerMin || 0;  // ms/min calculé par régression linéaire
+  const currentLatency = svc.latencyP99Ms || 0;
+
+  // Extrapolation : latence dans 30 min si la tendance continue
+  const predictedLatency = Math.max(0, currentLatency + slope * 30);
+
+  // Probabilité de dépasser le SLA (500ms)
+  const breachProbability =
+    predictedLatency > 500
+      ? Math.min(1, (predictedLatency - 500) / 500)     // déjà en route vers le breach
+      : slope > 0
+      ? Math.min(0.8, (slope * 30) / 500)               // tendance montante
+      : 0;
+
+  const riskLevel = breachProbability > 0.7 ? 'high'
+                  : breachProbability > 0.3 ? 'medium'
+                  : 'low';
+
+  return {
+    service: svc.name,
+    predicted_latency_p99: Math.round(predictedLatency),
+    breach_probability: parseFloat(breachProbability.toFixed(2)),
+    risk_level: riskLevel,
+    horizon_minutes: 30,
+    slope_per_min: slope,
+  };
+}
+```
+
+**Événement WebSocket `PREDICTION` :**
+
+```json
+{
+  "type": "PREDICTION",
+  "payload": {
+    "service": "checkout",
+    "predicted_latency_p99": 680,
+    "breach_probability": 0.52,
+    "risk_level": "medium",
+    "horizon_minutes": 30,
+    "slope_per_min": 8
+  }
+}
+```
+
+→ Affiché dans le dashboard comme un indicateur de risque futur, avant même que le SLA soit violé.
+
+---
+
+## Composants Frontend — Détail complet
+
+### `AnomalyFeed.jsx`
+Flux en temps réel de toutes les anomalies détectées, triées par sévérité (`critical` → `warning`). Se met à jour à chaque événement WebSocket `METRICS_UPDATE`. Affiche le type d'anomalie (`z-score`, `ewma_deviation`, `trend`, `ml_anomaly`) et le `combined_verdict`.
+
+### `AnomalyCard.jsx`
+Carte détaillée pour une anomalie individuelle. Affiche :
+- Service concerné + métrique
+- Message humain (ex: "Latence 85% au-dessus de la tendance lissée")
+- Score ML (`ml_score: -0.21`) si disponible
+- Verdict combiné avec badge coloré
+
+### `AnomalyHeatmap.jsx`
+Grille **service × temps** colorée par sévérité des anomalies. Permet de voir d'un coup d'œil quels services ont été en anomalie et à quel moment.
+
+### `AnomalyToast.jsx`
+Notification toast en bas de l'écran lors de l'arrivée d'une nouvelle anomalie via WebSocket. Disparaît automatiquement après quelques secondes.
+
+### `ControlPanel.jsx`
+Interface pour le `ControlService` :
+- Affiche le statut dry-run (ON/OFF)
+- Bouton pour toggle `DT_DRY_RUN` via `POST /api/control/toggle-dryrun`
+- Affiche les cooldowns actifs par service
+- Log des dernières actions (SCALED, DRY_RUN, COOLDOWN...)
+- Formulaire de scaling manuel (`POST /api/control/scale`)
+
+---
+
+## Variables d'environnement — Référence complète
+
+**Fichier : `backend/.env.example`**
+
+| Variable | Défaut | Description |
+|----------|--------|-------------|
+| `PORT` | `3001` | Port du backend Express |
+| `NODE_ENV` | `development` | Environnement Node |
+| `PROMETHEUS_URL` | `http://localhost:9090` | URL de l'API Prometheus |
+| `JAEGER_URL` | `http://localhost:16686` | URL de l'API Jaeger |
+| `KAFKA_BROKERS` | `localhost:9092` | Brokers Kafka (virgule-séparés) |
+| `REDIS_URL` | `redis://localhost:6379` | Connexion Redis |
+| `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/digitaltwin` | TimescaleDB |
+| `ML_SERVICE_URL` | `http://localhost:8001` | URL du service ML Python |
+| `SCRAPE_INTERVAL_MS` | `15000` | Intervalle de collecte (ms) |
+| `DEMO_MODE` | `true` | Données synthétiques (pas de Prometheus/Jaeger requis) |
+| `DT_DRY_RUN` | `true` | Contrôle en mode simulation (aucune action Docker) |
+| `DT_ENABLED_SERVICES` | `` | Services éligibles au scaling auto (vide = tous) |
